@@ -66,6 +66,18 @@ env.Library(
     ],
     LIBDEPS = [
         "$BUILD_DIR/mongo/bson",
+        "histogram",
+    ],
+)
+
+env.Library(
+    target = 'histogram',
+    source = [
+        "histogram.cpp",
+        "bin_run.cpp",
+    ],
+    LIBDEPS = [
+        "working_set",
     ],
 )
 
