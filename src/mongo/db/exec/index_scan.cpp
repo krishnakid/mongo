@@ -28,6 +28,7 @@
 
 #include "mongo/db/exec/index_scan.h"
 
+#include "mongo/db/exec/histogram.h"
 #include "mongo/db/exec/filter.h"
 #include "mongo/db/exec/working_set_computed_data.h"
 #include "mongo/db/index/index_access_method.h"
@@ -66,6 +67,11 @@ namespace mongo {
     }
 
     void IndexScan::initIndexScan() {
+        log() << "Initializing Index scan, load in histogram here." << endl;
+
+        Histogram k (10, 4, 0, 100);
+
+        log() << k;
         // Perform the possibly heavy-duty initialization of the underlying index cursor.
         if (_params.doNotDedup) {
             _shouldDedup = false;
