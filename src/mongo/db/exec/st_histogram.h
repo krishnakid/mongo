@@ -36,11 +36,10 @@
 namespace mongo {
     typedef std::pair<double,double> Bounds;
 
-    class RangeSummary{
-        public:
-            double low;
-            double high;
-            double nReturned;
+    struct RangeSummary{
+        double low;
+        double high;
+        double nReturned;
     };
 
     // define StHistogram class wrapper

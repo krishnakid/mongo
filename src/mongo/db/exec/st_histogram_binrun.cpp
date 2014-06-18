@@ -34,7 +34,7 @@
 #include <iostream>
 
 namespace mongo {
-    StHistogramRun::StHistogramRun(int bucket, double freq, std::pair<double, double> bounds) {
+    StHistogramRun::StHistogramRun(int bucket, double freq, Bounds bounds) {
         freqBounds.first = freqBounds.second = totalFreq = freq;
         rangeBounds.first = bounds.first;
         rangeBounds.second = bounds.second;
