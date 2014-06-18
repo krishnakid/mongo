@@ -73,8 +73,8 @@ env.Library(
 env.Library(
     target = 'histogram',
     source = [
-        "histogram.cpp",
-        "bin_run.cpp",
+        "st_histogram.cpp",
+        "st_histogram_binrun.cpp",
     ],
     LIBDEPS = [
         "working_set",
