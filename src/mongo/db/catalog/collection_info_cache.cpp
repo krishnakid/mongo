@@ -31,6 +31,7 @@
 #include "mongo/db/catalog/collection_info_cache.h"
 
 #include "mongo/db/d_concurrency.h"
+#include "mongo/db/query/st_histogram_cache.h"
 #include "mongo/db/query/plan_cache.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/index/index_descriptor.h"
@@ -42,6 +43,7 @@ namespace mongo {
     CollectionInfoCache::CollectionInfoCache( Collection* collection )
         : _collection( collection ),
           _keysComputed( false ),
+          _stHistCache(new StHistogramCache()),
           _planCache(new PlanCache(collection->ns().ns())),
           _querySettings(new QuerySettings()) { }
 
@@ -80,6 +82,10 @@ namespace mongo {
         if (NULL != _planCache.get()) {
             _planCache->clear();
         }
+    }
+
+    StHistogramCache* CollectionInfoCache::getStHistogramCache() const {
+        return _stHistCache.get();
     }
 
     PlanCache* CollectionInfoCache::getPlanCache() const {
