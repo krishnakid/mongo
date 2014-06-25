@@ -34,6 +34,7 @@
 
 #include "mongo/db/index_set.h"
 #include "mongo/db/query/query_settings.h"
+#include "mongo/db/query/st_histogram_cache.h"
 #include "mongo/db/query/plan_cache.h"
 
 namespace mongo {
@@ -57,6 +58,11 @@ namespace mongo {
         //
         // New Query Execution
         //
+
+        /**
+         * Get the StHistogramCache for this collection
+         */
+        StHistogramCache* getStHistogramCache() const;
 
         /**
          * Get the PlanCache for this collection.
@@ -98,6 +104,9 @@ namespace mongo {
         // ---  index keys cache
         bool _keysComputed;
         IndexPathSet _indexedPaths;
+
+        // a cache for self-tuning histograms
+        boost::scoped_ptr<StHistogramCache> _stHistCache;
 
         // A cache for query plans.
         boost::scoped_ptr<PlanCache> _planCache;
