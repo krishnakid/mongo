@@ -67,11 +67,6 @@ namespace mongo {
     }
 
     void IndexScan::initIndexScan() {
-        log() << "Initializing Index scan, load in histogram here." << endl;
-
-        StHistogram k (10, 4, 0, 100);
-
-        log() << k;
         // Perform the possibly heavy-duty initialization of the underlying index cursor.
         if (_params.doNotDedup) {
             _shouldDedup = false;
@@ -217,6 +212,31 @@ namespace mongo {
         if (0 != _params.maxScan) {
             if (_specificStats.keysExamined >= _params.maxScan) {
                 return true;
+            }
+        }
+        if (_hitEnd || _indexCursor->isEOF()) {
+
+            // pass update information to StHistogram
+            if (_params.bounds.fields.begin()->intervals.size() > 1) { 
+                log() << "multi-dimensional-index, ignore for now" << endl;
+            }
+            else if (_params.collection != NULL) {
+                StHistogramCache* histCache = 
+                        _params.collection->infoCache()->getStHistogramCache();
+
+                std::vector<Interval> intervals = _params.bounds.fields.begin()->intervals;
+                BSONElement st = intervals.begin()->start;
+                BSONElement end = intervals.begin()->end;
+
+                if (st.isNumber() && end.isNumber()) {
+                    // update histogram using params object!
+                    StHistogramUpdateParams params;
+                    params.nReturned = _commonStats.advanced;
+                    params.start = st.numberDouble();
+                    params.end = end.numberDouble();
+
+                    histCache->update(_keyPattern, params);
+                }
             }
         }
 
