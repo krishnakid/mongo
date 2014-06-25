@@ -28,40 +28,41 @@
 
 #pragma once
 
-#include <iostream> 
-#include <utility>
+#include <boost/thread/mutex.hpp>
 
-#include "mongo/db/exec/st_histogram_binrun.h"
-#include "mongo/db/query/st_histogram_cache.h"
+#include "mongo/db/query/lru_key_value.h"
 
 namespace mongo {
-    typedef std::pair<double,double> Bounds;
-    struct StHistogramUpdateParams;
 
-    // define StHistogram class wrapper
-    class StHistogram {
-    public:
-        StHistogram(int size, double binInit, double lowBound, double highBound);
-        ~StHistogram();
-        const static double kAlpha;                // universal damping term
-        const static double kMergeThreshold;       // merge threshold parameter
-        const static double kSplitThreshold;       // split threshold parameter
-        const static int kMergeInterval;           // merge interval parameter
+    class StHistogram;
+    class BSONObj;
+    class Status;
 
-        int nBuckets;
-        int nObs;                                  // number of observations seen
-        double* values;
-        Bounds* bounds;
-
-        void update(StHistogramUpdateParams&);
-        void restructure();
-        double getFreqOnRange(Bounds&);
-        std::string toString() const;
-    private:
-        static bool rangeBoundOrderingFunction(const StHistogramRun&, const StHistogramRun&);
-        static bool splitOrderingFunction(const StHistogramRun&, const StHistogramRun&);
+    // an input struct for the HistogramCache
+    struct StHistogramUpdateParams {
+        double start;
+        double end;
+        size_t nReturned;
     };
 
-    // histogram pretty print overloading
-    std::ostream& operator<<(std::ostream &strm, const StHistogram &hist);
+    // acts as an abstraction layer for the management of StHistograms 
+    class StHistogramCache { 
+    public:
+        StHistogramCache();
+        int get(const BSONObj& keyPattern, StHistogram* value);
+        bool contains(const BSONObj& keyPattern);
+        void update(const BSONObj& keyPattern, StHistogramUpdateParams& params);
+        void ping();
+    private:
+        int createNewHistogram(const BSONObj& keyPattern);
+        
+        //temporary/ shim fields
+        BSONObj* _cacheKey;
+        StHistogram* _cacheVal;
+
+        //LRUKeyValue<BSONObj, StHistogram> _cache;
+        //mutable boost::mutex _cacheMutex;
+    };
+
 }
+

@@ -34,22 +34,26 @@
 #include <sstream>
 
 #include "mongo/db/exec/st_histogram_binrun.h"
+#include "mongo/db/query/qlog.h"
 
 namespace mongo { 
-   const double StHistogram::kAlpha = 0.5;                // universal damping term
-   const double StHistogram::kMergeThreshold = 0.00025;   // merge threshold parameter
-   const double StHistogram::kSplitThreshold = 0.1;       // split threshold parameter
-
-   // StHistogram constructor
+    const double StHistogram::kAlpha = 0.5;                // universal damping term
+    const double StHistogram::kMergeThreshold = 0.00025;   // merge threshold parameter
+    const double StHistogram::kSplitThreshold = 0.1;       // split threshold parameter
+    const int StHistogram::kMergeInterval = 200;        // merge interval paramter
+    
+    // StHistogram constructor
     StHistogram::StHistogram(int size, double binInit, double lowBound, double highBound) {
         nBuckets = size;
         values = new double[nBuckets];    
         bounds = new Bounds[nBuckets];
         nObs = 0;
         
+        // if the bounds are -Inf to Inf, then we want equal binning density to the 
+        
         // initialize
         double curStart = lowBound;
-        double stepSize = (highBound - lowBound) / nBuckets; 
+        double stepSize = (highBound/nBuckets) - (lowBound / nBuckets); 
 
         for (int i = 0; i < nBuckets - 1; i++) {
             values[i] = binInit;
@@ -90,17 +94,19 @@ namespace mongo {
     }
 
     // recalibrates histogram based on batch input
-    void StHistogram::update(RangeSummary& data) {
+    void StHistogram::update(StHistogramUpdateParams& data) {
         nObs++;
-
+        if ((nObs % kMergeInterval) == (kMergeInterval - 1)) {
+            restructure(); 
+        }
         // estimate the result size of the selection using current data
         double est = 0;
         bool doesIntersect [nBuckets];
         double minIntersect, maxIntersect;
 
         for (int i = 0; i < nBuckets; i++) {
-            minIntersect = std::max(data.low, bounds[i].first);
-            maxIntersect = std::min(data.high, bounds[i].second);
+            minIntersect = std::max(data.start, bounds[i].first);
+            maxIntersect = std::min(data.end, bounds[i].second);
            
             double intersectFrac = std::max((maxIntersect - minIntersect) /
                          (bounds[i].second - bounds[i].first), 0.0);
@@ -115,8 +121,8 @@ namespace mongo {
         
         // distribute error amongst buckets in proportion to frequency
         for (int i = 0; i < nBuckets; i++) {     
-            minIntersect = std::max(data.low, bounds[i].first);
-            maxIntersect = std::min(data.high, bounds[i].second);
+            minIntersect = std::max(data.start, bounds[i].first);
+            maxIntersect = std::min(data.end, bounds[i].second);
             double frac = (maxIntersect - minIntersect + 1) /
                           (bounds[i].second - bounds[i].first + 1);
             
