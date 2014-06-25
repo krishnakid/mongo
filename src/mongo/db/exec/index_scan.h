@@ -49,7 +49,8 @@ namespace mongo {
                             direction(1),
                             doNotDedup(false),
                             maxScan(0),
-                            addKeyMetadata(false) { }
+                            addKeyMetadata(false),
+                            collection(NULL) { }
 
         const IndexDescriptor* descriptor;
 
@@ -64,6 +65,8 @@ namespace mongo {
 
         // Do we want to add the key as metadata?
         bool addKeyMetadata;
+
+        const Collection* collection;
     };
 
     /**
