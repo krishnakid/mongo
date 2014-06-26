@@ -33,8 +33,8 @@
 #include "mongo/db/catalog/collection_info_cache.h"
 
 #include "mongo/db/d_concurrency.h"
-#include "mongo/db/query/st_histogram_cache.h"
 #include "mongo/db/query/plan_cache.h"
+#include "mongo/db/query/st_histogram_cache.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/util/debug_util.h"

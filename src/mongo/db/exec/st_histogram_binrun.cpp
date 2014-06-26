@@ -35,10 +35,10 @@
 
 namespace mongo {
     StHistogramRun::StHistogramRun(int bucket, double freq, Bounds bounds) {
-        freqBounds.first = freqBounds.second = totalFreq = freq;
-        rangeBounds.first = bounds.first;
-        rangeBounds.second = bounds.second;
-        buckets.push_back(bucket);
+        _freqBounds.first = _freqBounds.second = _totalFreq = freq;
+        _rangeBounds.first = bounds.first;
+        _rangeBounds.second = bounds.second;
+        _buckets.push_back(bucket);
     }
     // return minimum of maximum differences.
     double StHistogramRun::getMaxDiff (StHistogramRun& run) {
@@ -48,8 +48,8 @@ namespace mongo {
 
 
     void StHistogramRun::setRangeBounds(Bounds nwBnds) {
-        rangeBounds.first = nwBnds.first;
-        rangeBounds.second = nwBnds.second;
+        _rangeBounds.first = nwBnds.first;
+        _rangeBounds.second = nwBnds.second;
     }
 
 
@@ -58,8 +58,8 @@ namespace mongo {
         int nNew = runs.size();
 
         double newFreq = getTotalFreq() / (nNew + 1) ;
-        double rangeStep = (rangeBounds.second - rangeBounds.first) / (nNew + 1);
-        double curStart = rangeBounds.first;
+        double rangeStep = (_rangeBounds.second - _rangeBounds.first) / (nNew + 1);
+        double curStart = _rangeBounds.first;
         for (StHistogramRunIter i = runs.begin(); i != runs.end(); i++) { 
             i->setTotalFreq(newFreq);
             i->setRangeBounds(Bounds(curStart, curStart+rangeStep));
@@ -68,27 +68,27 @@ namespace mongo {
 
         // update main object and deal with rounding errors
         setTotalFreq(newFreq);
-        setRangeBounds(Bounds(curStart, rangeBounds.second));
+        setRangeBounds(Bounds(curStart, _rangeBounds.second));
     }
 
     // merge two runs and store info in first run.
     void StHistogramRun::merge (StHistogramRun& run) { 
         // merge bucket ranges
         std::list<int> exBuckets = run.getBuckets();
-        buckets.splice(buckets.end(), exBuckets);    
-        totalFreq += run.getTotalFreq();
-        freqBounds.first = std::min(getLoFreq(), run.getLoFreq());
-        freqBounds.second = std::max(getHiFreq(), run.getHiFreq());
+        _buckets.splice(_buckets.end(), exBuckets);    
+        _totalFreq += run.getTotalFreq();
+        _freqBounds.first = std::min(getLoFreq(), run.getLoFreq());
+        _freqBounds.second = std::max(getHiFreq(), run.getHiFreq());
         
         Bounds extBounds = run.getRangeBounds();
-        rangeBounds.first = std::min(extBounds.first, rangeBounds.first);
-        rangeBounds.second = std::max(extBounds.second, rangeBounds.second);
+        _rangeBounds.first = std::min(extBounds.first, _rangeBounds.first);
+        _rangeBounds.second = std::max(extBounds.second, _rangeBounds.second);
     }
 
     void StHistogramRun::printBuckets() {
         typedef std::list<int>::iterator Iter;
         std::cout << "[" ;
-        for(Iter i = buckets.begin(); i != buckets.end(); i++) {
+        for(Iter i = _buckets.begin(); i != _buckets.end(); i++) {
            std::cout << *i << ", " ;
         }
         std::cout << std::string("]");

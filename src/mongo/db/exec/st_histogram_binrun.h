@@ -40,27 +40,33 @@ namespace mongo {
         StHistogramRun(int bucket, double freq, Bounds bounds);
         
         // accesssors and mutators
-        double getHiFreq() { return freqBounds.second; }
-        double getLoFreq() { return freqBounds.first; }
-        double getTotalFreq() const { return totalFreq; }
-        bool isMerged() const { return buckets.size() > 1; }
-        std::list<int> getBuckets() { return buckets; }
-        void setTotalFreq(double freq) { totalFreq = freq; }
-        Bounds getRangeBounds () const { return rangeBounds; }
+        double getHiFreq() { return _freqBounds.second; }
+        double getLoFreq() { return _freqBounds.first; }
+        double getTotalFreq() const { return _totalFreq; }
+        bool isMerged() const { return _buckets.size() > 1; }
+        std::list<int> getBuckets() { return _buckets; }
+        void setTotalFreq(double freq) { _totalFreq = freq; }
+        Bounds getRangeBounds () const { return _rangeBounds; }
         void setRangeBounds(Bounds);
 
         // bin management functions
+        /* splits local run with supplied run, storing info in both runs */
         void split(std::list<StHistogramRun>& run);
+        
+        /* merges the local run with the supplied run, storing info in the local run */
         void merge(StHistogramRun& run);
+
+        /* gets the maximumum difference between a bin in the local run and one in the 
+         * supplied run */
         double getMaxDiff (StHistogramRun& run);
         
-        // debug functions
+        /* DEBUG : pretty prints the runs */
         void printBuckets();
     private:
-        std::list<int> buckets;
-        Bounds freqBounds;
-        Bounds rangeBounds;
-        double totalFreq;
+        std::list<int> _buckets;                    // list of buckets in a run
+        Bounds _freqBounds;                         // frequency (low, high) tuple
+        Bounds _rangeBounds;                        // range (low, high) tuple
+        double _totalFreq;                          // total frequency sum in the run
     };
 
     typedef std::list<StHistogramRun>::iterator StHistogramRunIter;

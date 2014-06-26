@@ -45,7 +45,7 @@ namespace mongo {
     // StHistogram constructor
     StHistogram::StHistogram(int size, double binInit, double lowBound, double highBound) {
         nBuckets = size;
-        values = new double[nBuckets];    
+        freqs = new double[nBuckets];    
         bounds = new Bounds[nBuckets];
         nObs = 0;
         
@@ -56,29 +56,29 @@ namespace mongo {
         double stepSize = (highBound/nBuckets) - (lowBound / nBuckets); 
 
         for (int i = 0; i < nBuckets - 1; i++) {
-            values[i] = binInit;
+            freqs[i] = binInit;
             bounds[i].first = curStart;
             bounds[i].second = curStart + stepSize;
             curStart += stepSize;
         }
-        values[nBuckets - 1] = binInit;
+        freqs[nBuckets - 1] = binInit;
         bounds[nBuckets - 1].first = curStart;
         bounds[nBuckets - 1].second = highBound;
     }
 
     // StHistogram destructor
     StHistogram::~StHistogram() {
-        delete[] values;
+        delete[] freqs;
         delete[] bounds;
     }
 
-    bool StHistogram::rangeBoundOrderingFunction  (const StHistogramRun& run1,
-                                                   const StHistogramRun& run2) {
+    bool StHistogram::rangeBoundOrderingFunction(const StHistogramRun& run1,
+                                                 const StHistogramRun& run2) {
         return run1.getRangeBounds().first < run2.getRangeBounds().first;
     }
 
-    bool StHistogram::splitOrderingFunction (const StHistogramRun& run1, 
-                                             const StHistogramRun& run2) {
+    bool StHistogram::splitOrderingFunction(const StHistogramRun& run1, 
+                                            const StHistogramRun& run2) {
         if (run1.isMerged() && run2.isMerged()) {
             return run1.getTotalFreq() > run2.getTotalFreq();
         } 
@@ -94,7 +94,7 @@ namespace mongo {
     }
 
     // recalibrates histogram based on batch input
-    void StHistogram::update(StHistogramUpdateParams& data) {
+    void StHistogram::update(const StHistogramUpdateParams& data) {
         nObs++;
         if ((nObs % kMergeInterval) == (kMergeInterval - 1)) {
             restructure(); 
@@ -113,7 +113,7 @@ namespace mongo {
         
             doesIntersect[i] = intersectFrac > 0;
 
-            est += values[i] * intersectFrac;
+            est += freqs[i] * intersectFrac;
         }
 
         // compute absolute estimation error
@@ -125,49 +125,36 @@ namespace mongo {
             maxIntersect = std::min(data.end, bounds[i].second);
             double frac = (maxIntersect - minIntersect + 1) /
                           (bounds[i].second - bounds[i].first + 1);
-            
             if (doesIntersect[i]) {
-                values[i] = std::max(0.0, values[i] + 
-                                            (frac * kAlpha * esterr *
-                                            values[i] /(est)));
+                freqs[i] = std::max(0.0, freqs[i] + (frac * kAlpha * esterr * freqs[i] /(est)));
             }
         }
 
     }
 
-    void StHistogram::restructure() {
-        typedef std::pair<double, double> Bounds;
-        typedef std::list<StHistogramRun>::iterator StHistogramRunIter;
-        typedef std::pair<StHistogramRunIter, StHistogramRunIter> MergePair;
-
-        // initialize B runs of buckets
-        int nBins = nBuckets;
-        std::list<StHistogramRun> runs;
+    void StHistogram::merge(std::list<StHistogramRun>& runs, std::list<StHistogramRun>& reclaimed) {
         double totalFreq = 0;
 
-        for(int i = 0; i < nBins; i++) {
-            totalFreq += values[i];
-            StHistogramRun nr (i, values[i], 
-                     Bounds(bounds[i].first, bounds[i].second));
+        for(int i = 0; i < nBuckets; i++) {
+            totalFreq += freqs[i];
+            StHistogramRun nr (i, freqs[i], Bounds(bounds[i].first, bounds[i].second));
             runs.push_back(nr); 
         }
         
         // for every two consercuive runs of buckets, find the maximum
         // difference in frequency between a bucket in the first run and
         // a bucket in the second run
-        std::list<StHistogramRun> reclaimed;
         bool mergeComplete = false;
 
         while (!mergeComplete) { //  && reclaimed.size() + 1 < runs.size() 
             mergeComplete = true;
             MergePair best;
             double minDiff = std::numeric_limits<double>::infinity();
-            StHistogramRunIter i = runs.begin();
-            StHistogramRunIter curRun = i;
             
+            StHistogramRunIter curRun = runs.begin();
             size_t nUnmerged = 0;
 
-            for (i++; i != runs.end(); i++) {
+            for (StHistogramRunIter i = ++(runs.begin()); i != runs.end(); i++) {
                 double cDiff = curRun->getMaxDiff(*i); 
                
                 if (cDiff < minDiff) { 
@@ -183,37 +170,35 @@ namespace mongo {
                 curRun = i;
             }
 
+            // ensures that not too many buckets are split.  This is a departure from the algorithm
+            // in (Aboulnaga, Chaudhuri)
             if (nUnmerged <= reclaimed.size()) {
                 break;                                   // otherwise merged buckets will be split
             }
 
             if (minDiff < (kMergeThreshold * totalFreq)) {
                 best.first->merge(*(best.second));          // merge
-                reclaimed.push_back(*(best.second));       // reclaim Run
+                reclaimed.push_back(*(best.second));        // reclaim Run
                 runs.erase(best.second);
                 mergeComplete = false;
             }
             // and repeat.
         }
-        // split until appropriate
-        //
-        // if a < b then a will come before b in the listing
-        //
-        runs.sort(splitOrderingFunction);
-        
-        size_t nToSplit = nBins * kSplitThreshold;
+    }
+
+    void StHistogram::split(std::list<StHistogramRun>& runs, std::list<StHistogramRun>& reclaimed) {
+        size_t nToSplit = nBuckets * kSplitThreshold;
 
         std::list<StHistogramRun> candidates;
         for (StHistogramRunIter i = runs.begin(); 
             candidates.size() <= nToSplit && i != runs.end(); i++) {
+            
             candidates.push_front(*i);          // for reverse access later
-
             i = runs.erase(i);
             i--;
         }
 
         double fullFreq = 0;
-
         for(StHistogramRunIter i = candidates.begin(); i != candidates.end(); i++) {
             fullFreq += i->getTotalFreq();
         }
@@ -245,28 +230,38 @@ namespace mongo {
             candidatesProcessed++;
         } 
 
-        // now order by bounds and map back onto original histogram.
+    }
 
-        runs.sort(rangeBoundOrderingFunction);
 
-        // mappy map map
+
+    void StHistogram::restructure() {
+        // initialize B runs of buckets
+        std::list<StHistogramRun> runs;                 // original runs
+        std::list<StHistogramRun> reclaimed;            // runs reclaimed
+
+        // start algorithm
+        merge(runs, reclaimed);                                    // merge runs
+        runs.sort(splitOrderingFunction);               // order to split
+        split(runs, reclaimed);                                    // split runs
+        runs.sort(rangeBoundOrderingFunction);          // order to map
+
+        // map onto memory allocated for original histogram
         int counter = 0;
         for (StHistogramRunIter i = runs.begin(); i != runs.end(); i++) { 
-            values[counter] = i->getTotalFreq();
+            freqs[counter] = i->getTotalFreq();
             bounds[counter].first = i->getRangeBounds().first;
             bounds[counter].second = i->getRangeBounds().second;
             counter++;
         }
     }
 
-    double StHistogram::getFreqOnRange(Bounds& range)
-    {
+    double StHistogram::getFreqOnRange(Bounds& range) {
         double freq = 0;
         for (int i = 0; i < nBuckets; i++) {
             double overlap = std::min(range.second, bounds[i].second) -
                              std::max(range.first, bounds[i].first);
             overlap = std::max(overlap / (bounds[i].second-bounds[i].first), 0.0);
-            freq += overlap * values[i];
+            freq += overlap * freqs[i];
         }
         return freq;
     }
@@ -276,7 +271,7 @@ namespace mongo {
         for(int i = 0; i < nBuckets; i++) {
             s << bounds[i].first << ","
               << bounds[i].second << ","
-              << values[i] << std::endl;
+              << freqs[i] << std::endl;
         }
         return s.str();
     }
@@ -286,7 +281,7 @@ namespace mongo {
         for(int i = 0; i < hist.nBuckets; i++) {
             retStrm << hist.bounds[i].first << "," 
                     << hist.bounds[i].second << ","
-                    << hist.values[i] << std::endl;
+                    << hist.freqs[i] << std::endl;
         }
         return retStrm;
     }

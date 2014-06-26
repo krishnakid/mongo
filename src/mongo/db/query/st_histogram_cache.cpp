@@ -38,10 +38,7 @@
 
 namespace mongo {
 
-    StHistogramCache::StHistogramCache() { 
-       _cacheVal = NULL;
-       _cacheKey = NULL;                // NULL out shim pointers.
-    }
+    StHistogramCache::StHistogramCache() : _cacheKey(NULL), _cacheVal(NULL) { }
 
     int StHistogramCache::get(const BSONObj& keyPattern, StHistogram* value) {
         log() << " attempting to retreive object "  << keyPattern
@@ -57,7 +54,7 @@ namespace mongo {
     void StHistogramCache::ping() {
     }
 
-    void StHistogramCache::update(const BSONObj& keyPattern, StHistogramUpdateParams& params) {
+    void StHistogramCache::update(const BSONObj& keyPattern, const StHistogramUpdateParams& params) {
         if (_cacheKey == NULL){
             createNewHistogram(keyPattern);
         }
