@@ -28,7 +28,6 @@
 
 #include "mongo/db/exec/index_scan.h"
 
-#include "mongo/db/exec/st_histogram.h"
 #include "mongo/db/exec/filter.h"
 #include "mongo/db/exec/working_set_computed_data.h"
 #include "mongo/db/index/index_access_method.h"
@@ -212,33 +211,43 @@ namespace mongo {
                 return true;
             }
         }
-        if (_hitEnd || _indexCursor->isEOF()) {
+        bool isEOF = _hitEnd || _indexCursor->isEOF();
 
-            // pass update information to StHistogram
-            if (_params.bounds.fields.begin()->intervals.size() > 1) { 
-                log() << "multi-dimensional-index, ignore for now" << endl;
-            }
-            else if (_params.collection != NULL) {
-                StHistogramCache* histCache = 
-                        _params.collection->infoCache()->getStHistogramCache();
-
-                std::vector<Interval> intervals = _params.bounds.fields.begin()->intervals;
-                BSONElement st = intervals.begin()->start;
-                BSONElement end = intervals.begin()->end;
-
-                if (st.isNumber() && end.isNumber()) {
-                    // update histogram using params object!
-                    StHistogramUpdateParams params;
-                    params.nReturned = _commonStats.advanced;
-                    params.start = st.numberDouble();
-                    params.end = end.numberDouble();
-
-                    histCache->update(_keyPattern, params);
-                }
-            }
+        // histogram update logic.  Only wanted to call this function once, so 
+        // felt most sane putting it here!
+        if (isEOF) {
+            updateStHistogram();
         }
 
-        return _hitEnd || _indexCursor->isEOF();
+        return isEOF;
+    }
+
+    void IndexScan::updateStHistogram() { 
+        if (_params.bounds.fields.size() > 1 ) {
+            log() << "compound index - ignore for now" << endl;
+            return;
+        }
+        if (_params.bounds.fields.begin()->intervals.size() > 1) { 
+            log() << "bounds have more than one interval - ignore for now" << endl;
+            return;
+        }
+        std::vector<Interval> intervals = _params.bounds.fields.begin()->intervals;
+        BSONElement st = intervals.begin()->start;
+        BSONElement end = intervals.begin()->end;
+        if (!st.isNumber() || !end.isNumber()) {
+            log() << "field is not numeric - ignore for now" << endl;
+            return;
+        }
+
+        StHistogramCache* histCache = _params.collection->infoCache()->getStHistogramCache();
+        // update histogram using params object!
+        StHistogramUpdateParams params;
+        params.nReturned = _commonStats.advanced;
+        params.start = st.numberDouble();
+        params.end = end.numberDouble();
+
+        histCache->update(_keyPattern, params);
+
     }
 
     void IndexScan::prepareToYield() {

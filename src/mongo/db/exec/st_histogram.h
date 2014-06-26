@@ -36,6 +36,9 @@
 
 namespace mongo {
     typedef std::pair<double,double> Bounds;
+    typedef std::list<StHistogramRun>::iterator StHistogramRunIter;
+    typedef std::pair<StHistogramRunIter, StHistogramRunIter> MergePair;
+
     struct StHistogramUpdateParams;
 
     // define StHistogram class wrapper
@@ -48,18 +51,34 @@ namespace mongo {
         const static double kSplitThreshold;       // split threshold parameter
         const static int kMergeInterval;           // merge interval parameter
 
-        int nBuckets;
+        int nBuckets;                              // number of buckets in the histogram
         int nObs;                                  // number of observations seen
-        double* values;
-        Bounds* bounds;
+        double* freqs;                             // array of value estimations for histogram
+        Bounds* bounds;                            // array of range bounds
 
-        void update(StHistogramUpdateParams&);
+        /* update the histogram with the (lowBound, highBound, nReturned) information */
+        void update(const StHistogramUpdateParams&);
+
+        /* restructure the histogram to achieve higher granularity on high-frequency bins */
         void restructure();
+
+        /* request histogram estimate for a given range bound */
         double getFreqOnRange(Bounds&);
+
+        /* DEBUG : for pretty printing */
         std::string toString() const;
     private:
+        /* function used to order runs by range bound for histogram update */
         static bool rangeBoundOrderingFunction(const StHistogramRun&, const StHistogramRun&);
+
+        /* function used to order runs during split ordering */
         static bool splitOrderingFunction(const StHistogramRun&, const StHistogramRun&);
+
+        /* merge portion of histogram restructuring */
+        void merge(std::list<StHistogramRun>&, std::list<StHistogramRun>&);
+        
+        /* split portion of histogram restructuring */
+        void split(std::list<StHistogramRun>&, std::list<StHistogramRun>&);
     };
 
     // histogram pretty print overloading

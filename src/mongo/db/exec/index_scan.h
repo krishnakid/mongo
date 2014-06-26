@@ -107,6 +107,11 @@ namespace mongo {
         /** See if the cursor is pointing at or past _endKey, if _endKey is non-empty. */
         void checkEnd();
 
+        /**
+         * update the StHistogram contained in the CollectionInfoCache
+         */
+        void updateStHistogram();
+
         // The WorkingSet we annotate with results.  Not owned by us.
         WorkingSet* _workingSet;
 

@@ -49,19 +49,28 @@ namespace mongo {
     class StHistogramCache { 
     public:
         StHistogramCache();
+        
+        /* gets the histogram associated with the supplied keyPattern */
         int get(const BSONObj& keyPattern, StHistogram* value);
+
+        /* asks whether the cache contains a histogram matching the supplied keyPattern */
         bool contains(const BSONObj& keyPattern);
-        void update(const BSONObj& keyPattern, StHistogramUpdateParams& params);
+
+        /* updates the histogram cached with the supplied keyPattern or creates one
+         * if none exists */
+        void update(const BSONObj& keyPattern, const StHistogramUpdateParams& params);
+
+        /* DEBUG : prints something out to verify the cache has been referenced properly */
         void ping();
     private:
+        /* called to create a new histogram when one does not exist for a supplied 
+         * keyPattern in the interface methods */
         int createNewHistogram(const BSONObj& keyPattern);
         
-        //temporary/ shim fields
+        //TODO: replace with full Key/Value mapping and implement methods above.
+        // shim fields
         BSONObj* _cacheKey;
         StHistogram* _cacheVal;
-
-        //LRUKeyValue<BSONObj, StHistogram> _cache;
-        //mutable boost::mutex _cacheMutex;
     };
 
 }
