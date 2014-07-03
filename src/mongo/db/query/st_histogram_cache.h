@@ -29,7 +29,9 @@
 #pragma once
 
 #include <boost/thread/mutex.hpp>
+#include <boost/unordered_map.hpp>
 
+#include "mongo/bson/bsonobj.h"
 #include "mongo/db/query/lru_key_value.h"
 
 namespace mongo {
@@ -37,6 +39,21 @@ namespace mongo {
     class StHistogram;
     class BSONObj;
     class Status;
+
+    struct stEqual : std::binary_function<BSONObj, BSONObj, bool> {
+        bool operator()(const BSONObj& b1, const BSONObj& b2) const {
+            return b1.equal(b2);
+        }
+    };
+
+    struct stHash : std::unary_function<BSONObj, std::size_t> {
+        std::size_t operator()(const BSONObj& b1) const {
+            return b1.hash();
+        }
+    };
+
+    // typedefs for convenient reference
+    typedef boost::unordered_map<BSONObj, StHistogram*, stHash, stEqual> StHistMap;
 
     // an input struct for the HistogramCache
     struct StHistogramUpdateParams {
@@ -60,17 +77,12 @@ namespace mongo {
          * if none exists */
         void update(const BSONObj& keyPattern, const StHistogramUpdateParams& params);
 
-        /* DEBUG : prints something out to verify the cache has been referenced properly */
-        void ping();
     private:
         /* called to create a new histogram when one does not exist for a supplied 
          * keyPattern in the interface methods */
         int createNewHistogram(const BSONObj& keyPattern);
         
-        //TODO: replace with full Key/Value mapping and implement methods above.
-        // shim fields
-        BSONObj* _cacheKey;
-        StHistogram* _cacheVal;
+        StHistMap _cache;
     };
 
 }

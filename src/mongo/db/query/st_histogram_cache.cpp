@@ -29,18 +29,21 @@
 
 #include "mongo/db/query/st_histogram_cache.h"
 
+#include <boost/unordered_map.hpp>
 #include <limits>
 #include <fstream>                                  // for debug only
 
 #include "mongo/db/exec/st_histogram.h"
 #include "mongo/db/query/qlog.h"
+#include "mongo/db/query/query_knobs.h"
 #include "mongo/db/lasterror.h"
+#include "mongo/db/query/lru_key_value.h"
 
 namespace mongo {
-
-    StHistogramCache::StHistogramCache() : _cacheKey(NULL), _cacheVal(NULL) { }
-
+    StHistogramCache::StHistogramCache() : _cache() {}
+    
     int StHistogramCache::get(const BSONObj& keyPattern, StHistogram* value) {
+
         log() << " attempting to retreive object "  << keyPattern
               << " from HistogramCache " << endl;
         return 0;
@@ -50,19 +53,17 @@ namespace mongo {
         return false;
     }   
 
-    // verify that everything is here
-    void StHistogramCache::ping() {
-    }
-
     void StHistogramCache::update(const BSONObj& keyPattern, const StHistogramUpdateParams& params) {
-        if (_cacheKey == NULL){
+        if (_cache.find(keyPattern) == _cache.end()) {
             createNewHistogram(keyPattern);
         }
-        _cacheVal->update(params);
+       
+        StHistMap::iterator histEntry = _cache.find(keyPattern);
+        histEntry->second->update(params);
 
         std::ofstream testStream;
         testStream.open("/data/db/debug.log", std::ofstream::out);
-        testStream << *_cacheVal;
+        testStream << *(histEntry->second);
         testStream.close();
     }
 
@@ -73,15 +74,11 @@ namespace mongo {
     int StHistogramCache::createNewHistogram(const BSONObj& keyPattern) { 
         // create a new histogram and add it to the LRUKeyValue cache.
         
-        if (_cacheKey != NULL) {
-            return 0;
-        }
+        StHistogram* newHist = new StHistogram(20, 20, 0, 100);
+        _cache.insert(std::make_pair(keyPattern, newHist));
 
-        // TODO: don't like these floating "new/delete" statements, but putting in to make 
-        //       this stage work.  Will be replacing this with a more sophisticated KV-store
-        //       anyway.
-        _cacheKey = new BSONObj(keyPattern);
-        _cacheVal = new StHistogram(20, 20, 0, 100);
+        log() << "new key added : " << keyPattern << endl;
+
         // _cacheVal = new StHistogram(20, 20, - std::numeric_limits<double>::max() + 1,
         //                                     std::numeric_limits<double>::max() - 1);
         return 0;
