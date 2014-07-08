@@ -42,10 +42,13 @@
 namespace mongo {
     StHistogramCache::StHistogramCache() : _cache() {}
     
-    int StHistogramCache::get(const BSONObj& keyPattern, StHistogram* value) {
+    int StHistogramCache::get(const BSONObj& keyPattern, StHistogram** value) {
+        StHistMap::iterator histEntry = _cache.find(keyPattern);
+        if (histEntry == _cache.end()) {
+            return -1;      // ERROR, no histogram found for the index
+        }
 
-        log() << " attempting to retreive object "  << keyPattern
-              << " from HistogramCache " << endl;
+        *value = histEntry->second;
         return 0;
     }
 
@@ -57,7 +60,10 @@ namespace mongo {
         if (_cache.find(keyPattern) == _cache.end()) {
             createNewHistogram(keyPattern);
         }
-       
+      
+        log() << "updating " << keyPattern << " with data ( " << params.start << ", " << 
+            params.end << ", " << params.nReturned << " )" << endl;
+
         StHistMap::iterator histEntry = _cache.find(keyPattern);
         histEntry->second->update(params);
 
@@ -74,7 +80,7 @@ namespace mongo {
     int StHistogramCache::createNewHistogram(const BSONObj& keyPattern) { 
         // create a new histogram and add it to the LRUKeyValue cache.
         
-        StHistogram* newHist = new StHistogram(20, 20, 0, 100);
+        StHistogram* newHist = new StHistogram(30, 20, -1000, 1000);
         _cache.insert(std::make_pair(keyPattern, newHist));
 
         log() << "new key added : " << keyPattern << endl;

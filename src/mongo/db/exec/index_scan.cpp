@@ -202,6 +202,8 @@ namespace mongo {
     }
 
     bool IndexScan::isEOF() {
+        bool isEOF = false;
+
         if (NULL == _indexCursor.get()) {
             // Have to call work() at least once.
             return false;
@@ -210,11 +212,11 @@ namespace mongo {
         // If there's a limit on how many keys we can scan, we may be EOF when we hit that.
         if (0 != _params.maxScan) {
             if (_specificStats.keysExamined >= _params.maxScan) {
-                return true;
+                isEOF = true;
             }
         }
-        bool isEOF = _hitEnd || _indexCursor->isEOF();
 
+        isEOF = (_hitEnd || _indexCursor->isEOF());
         // histogram update logic.  Only wanted to call this function once, so 
         // felt most sane putting it here!
         if (isEOF) {
@@ -249,7 +251,6 @@ namespace mongo {
         params.end = end.numberDouble();
 
         histCache->update(_keyPattern, params);
-
     }
 
     void IndexScan::prepareToYield() {

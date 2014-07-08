@@ -68,7 +68,7 @@ namespace mongo {
         StHistogramCache();
         
         /* gets the histogram associated with the supplied keyPattern */
-        int get(const BSONObj& keyPattern, StHistogram* value);
+        int get(const BSONObj& keyPattern, StHistogram** value);
 
         /* asks whether the cache contains a histogram matching the supplied keyPattern */
         bool contains(const BSONObj& keyPattern);

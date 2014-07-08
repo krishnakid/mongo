@@ -57,6 +57,7 @@
 #include "mongo/db/query/query_planner.h"
 #include "mongo/db/query/query_planner_common.h"
 #include "mongo/db/query/single_solution_runner.h"
+#include "mongo/db/query/solution_analysis.h"
 #include "mongo/db/query/stage_builder.h"
 #include "mongo/db/query/subplan_runner.h"
 #include "mongo/db/index_names.h"
@@ -297,6 +298,31 @@ namespace mongo {
         }
         else {
             // Many solutions.  Create a MultiPlanStage to pick the best, update the cache, and so on.
+
+            // Using the StHistogramCache, analyze the IndexScan stages of the solutions to prune
+            // the plan space before adding to the workingSet
+
+            double cardEsts [solutions.size()];
+            log() << "there are  "<< solutions.size() << " candidates solutions" << endl;
+            for (size_t ix = 0; ix < solutions.size(); ++ix) {
+                cardEsts[ix] = SolutionAnalysis::analyzeIndexSelectivity(
+                                                    collection->infoCache()->getStHistogramCache(),
+                                                    solutions[ix]->root.get());
+                log() << "estimated cardinality: " << cardEsts[ix] << " for plan:  " 
+                      << getPlanSummary(*solutions[ix]) << endl;
+            }
+
+            int maxCardSol = 0;
+            for (size_t ix = 1; ix < solutions.size(); ++ix) {
+                if (cardEsts[ix] > cardEsts[maxCardSol]) { 
+                    maxCardSol = ix;
+                }
+            }
+            
+            // evict the plan of highest cardinality
+            log() << "erasing plan " << getPlanSummary(*solutions[maxCardSol]) << endl;
+            solutions.erase(solutions.begin() + maxCardSol);
+
 
             // The working set will be shared by all candidate plans and owned by the containing runner
             WorkingSet* sharedWorkingSet = new WorkingSet();

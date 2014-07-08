@@ -22,6 +22,7 @@ env.Library(
     LIBDEPS=[
         "index_bounds",
         "lite_parsed_query",
+        "solution_analysis",
         "$BUILD_DIR/mongo/bson",
         "$BUILD_DIR/mongo/expressions",
         "$BUILD_DIR/mongo/index_names",
@@ -92,6 +93,15 @@ env.Library(
     ],
     LIBDEPS=[
         "$BUILD_DIR/mongo/bson",
+    ],
+)
+
+env.Library( 
+    target="solution_analysis",
+    source=[
+        "solution_analysis.cpp",
+    ],
+    LIBDEPS=[ 
     ],
 )
 
