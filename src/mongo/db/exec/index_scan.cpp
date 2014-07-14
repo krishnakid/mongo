@@ -128,6 +128,33 @@ namespace mongo {
         }
     }
 
+    void IndexScan::updateStHistogram() { 
+        if (_params.bounds.fields.size() > 1 ) {
+            log() << "compound index - ignore for now" << endl;
+            return;
+        }
+        if (_params.bounds.fields.begin()->intervals.size() > 1) { 
+            log() << "bounds have more than one interval - ignore for now" << endl;
+            return;
+        }
+        std::vector<Interval> intervals = _params.bounds.fields.begin()->intervals;
+        BSONElement st = intervals.begin()->start;
+        BSONElement end = intervals.begin()->end;
+        if (!st.isNumber() || !end.isNumber()) {
+            log() << "field is not numeric - ignore for now" << endl;
+            return;
+        }
+
+        StHistogramCache* histCache = _params.collection->infoCache()->getStHistogramCache();
+        // update histogram using params object!
+        StHistogramUpdateParams params;
+        params.nReturned = _commonStats.advanced;
+        params.start = st.numberDouble();
+        params.end = end.numberDouble();
+
+        histCache->update(_keyPattern, params);
+    }
+
     PlanStage::StageState IndexScan::work(WorkingSetID* out) {
         ++_commonStats.works;
 
@@ -224,33 +251,6 @@ namespace mongo {
         }
 
         return isEOF;
-    }
-
-    void IndexScan::updateStHistogram() { 
-        if (_params.bounds.fields.size() > 1 ) {
-            log() << "compound index - ignore for now" << endl;
-            return;
-        }
-        if (_params.bounds.fields.begin()->intervals.size() > 1) { 
-            log() << "bounds have more than one interval - ignore for now" << endl;
-            return;
-        }
-        std::vector<Interval> intervals = _params.bounds.fields.begin()->intervals;
-        BSONElement st = intervals.begin()->start;
-        BSONElement end = intervals.begin()->end;
-        if (!st.isNumber() || !end.isNumber()) {
-            log() << "field is not numeric - ignore for now" << endl;
-            return;
-        }
-
-        StHistogramCache* histCache = _params.collection->infoCache()->getStHistogramCache();
-        // update histogram using params object!
-        StHistogramUpdateParams params;
-        params.nReturned = _commonStats.advanced;
-        params.start = st.numberDouble();
-        params.end = end.numberDouble();
-
-        histCache->update(_keyPattern, params);
     }
 
     void IndexScan::prepareToYield() {
