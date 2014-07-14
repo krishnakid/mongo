@@ -1,7 +1,7 @@
 // database.cpp
 
 /**
-*    Copyright (C) 2008 10gen Inc.
+*    Copyright (C) 2008-2014 MongoDB Inc.
 *
 *    This program is free software: you can redistribute it and/or  modify
 *    it under the terms of the GNU Affero General Public License, version 3,
@@ -39,12 +39,12 @@
 #include "mongo/db/auth/auth_index_d.h"
 #include "mongo/db/background.h"
 #include "mongo/db/clientcursor.h"
+#include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/collection_catalog_entry.h"
 #include "mongo/db/catalog/collection_options.h"
 #include "mongo/db/catalog/database_catalog_entry.h"
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/dbhelpers.h"
-#include "mongo/db/structure/catalog/index_details.h"
 #include "mongo/db/instance.h"
 #include "mongo/db/introspect.h"
 #include "mongo/db/repair_database.h"
@@ -172,7 +172,7 @@ namespace mongo {
 
             CollectionCatalogEntry* coll = _dbEntry->getCollectionCatalogEntry( txn, ns );
 
-            CollectionOptions options = coll->getCollectionOptions();
+            CollectionOptions options = coll->getCollectionOptions( txn );
             if ( !options.temp )
                 continue;
 
@@ -267,7 +267,7 @@ namespace mongo {
             size += collection->dataSize();
 
             BSONObjBuilder temp;
-            storageSize += collection->getRecordStore()->storageSize( &temp );
+            storageSize += collection->getRecordStore()->storageSize( opCtx, &temp );
             numExtents += temp.obj()["numExtents"].numberInt(); // XXX
 
             indexes += collection->getIndexCatalog()->numIndexesTotal();
@@ -459,8 +459,8 @@ namespace mongo {
         if (NamespaceString::normal(ns)) {
             // This check only applies for actual collections, not indexes or other types of ns.
             uassert(17381, str::stream() << "fully qualified namespace " << ns << " is too long "
-                                         << "(max is " << Namespace::MaxNsColletionLen << " bytes)",
-                    ns.size() <= Namespace::MaxNsColletionLen);
+                                         << "(max is " << NamespaceString::MaxNsCollectionLen << " bytes)",
+                    ns.size() <= NamespaceString::MaxNsCollectionLen);
         }
 
         NamespaceString nss( ns );

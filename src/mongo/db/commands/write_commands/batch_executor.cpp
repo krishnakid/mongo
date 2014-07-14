@@ -359,12 +359,12 @@ namespace mongo {
                 response->setWriteConcernError( wcError.release() );
             }
 
-            const repl::ReplicationCoordinator::Mode replMode =
-                    repl::getGlobalReplicationCoordinator()->getReplicationMode();
+            repl::ReplicationCoordinator* replCoord = repl::getGlobalReplicationCoordinator();
+            const repl::ReplicationCoordinator::Mode replMode = replCoord->getReplicationMode();
             if (replMode != repl::ReplicationCoordinator::modeNone) {
                 response->setLastOp( _client->getLastOp() );
                 if (replMode == repl::ReplicationCoordinator::modeReplSet) {
-                    response->setElectionId(repl::theReplSet->getElectionId());
+                    response->setElectionId(replCoord->getElectionId());
                 }
             }
 
@@ -513,7 +513,7 @@ namespace mongo {
         currentOp->ensureStarted();
         currentOp->setNS( currWrite.getRequest()->getNS() );
 
-        currentOp->debug().ns = currentOp->getNS();
+        currentOp->debug().ns = currentOp->getNS().c_str();
         currentOp->debug().op = currentOp->getOp();
 
         if ( currWrite.getOpType() == BatchedCommandRequest::BatchType_Insert ) {

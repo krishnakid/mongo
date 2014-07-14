@@ -41,7 +41,6 @@
 #include "mongo/db/commands.h"
 #include "mongo/db/max_time.h"
 #include "mongo/db/server_parameters.h"
-#include "mongo/db/structure/catalog/index_details.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/query/lite_parsed_query.h"
 #include "mongo/db/stats/counters.h"
@@ -137,10 +136,17 @@ namespace mongo {
         audit::logQueryAuthzCheck(client, ns, q.query, status.code());
         uassertStatusOK(status);
 
-        LOG(3) << "shard query: " << q.ns << "  " << q.query << endl;
+        LOG(3) << "query: " << q.ns << " " << q.query << " ntoreturn: " << q.ntoreturn
+               << " options: " << q.queryOptions << endl;
 
         if ( q.ntoreturn == 1 && strstr(q.ns, ".$cmd") )
             throw UserException( 8010 , "something is wrong, shouldn't see a command here" );
+
+        if (q.queryOptions & QueryOption_Exhaust) {
+            uasserted(18526,
+                      string("the 'exhaust' query option is invalid for mongos queries: ") + q.ns
+                      + " " + q.query.toString());
+        }
 
         QuerySpec qSpec( (string)q.ns, q.query, q.fields, q.ntoskip, q.ntoreturn, q.queryOptions );
 
@@ -232,7 +238,14 @@ namespace mongo {
     void Strategy::clientCommandOp( Request& r ) {
         QueryMessage q( r.d() );
 
-        LOG(3) << "single query: " << q.ns << "  " << q.query << "  ntoreturn: " << q.ntoreturn << " options : " << q.queryOptions << endl;
+        LOG(3) << "command: " << q.ns << " " << q.query << " ntoreturn: " << q.ntoreturn
+               << " options: " << q.queryOptions << endl;
+
+        if (q.queryOptions & QueryOption_Exhaust) {
+            uasserted(18527,
+                      string("the 'exhaust' query option is invalid for mongos commands: ") + q.ns
+                      + " " + q.query.toString());
+        }
 
         NamespaceString nss( r.getns() );
         // Regular queries are handled in strategy_shard.cpp

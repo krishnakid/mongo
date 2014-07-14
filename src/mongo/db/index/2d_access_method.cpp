@@ -31,7 +31,6 @@
 #include <string>
 #include <vector>
 
-#include "mongo/db/geo/core.h"
 #include "mongo/db/index_names.h"
 #include "mongo/db/index/2d_common.h"
 #include "mongo/db/index/expression_keys_private.h"
@@ -41,7 +40,7 @@
 namespace mongo {
 
     TwoDAccessMethod::TwoDAccessMethod(IndexCatalogEntry* btreeState,
-                                       BtreeInterface* btree)
+                                       SortedDataInterface* btree)
         : BtreeBasedAccessMethod(btreeState, btree) {
 
         const IndexDescriptor* descriptor = btreeState->descriptor();

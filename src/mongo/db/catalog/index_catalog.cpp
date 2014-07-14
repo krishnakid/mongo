@@ -1,7 +1,7 @@
 // index_catalog.cpp
 
 /**
-*    Copyright (C) 2013 10gen Inc.
+*    Copyright (C) 2013-2014 MongoDB Inc.
 *
 *    This program is free software: you can redistribute it and/or  modify
 *    it under the terms of the GNU Affero General Public License, version 3,
@@ -222,7 +222,8 @@ namespace mongo {
         }
 
         auto_ptr<Runner> runner(
-            InternalPlanner::collectionScan(db->_indexesName,
+            InternalPlanner::collectionScan(txn,
+                                            db->_indexesName,
                                             db->getCollection(txn, db->_indexesName)));
 
         BSONObj index;
@@ -436,13 +437,19 @@ namespace mongo {
         IndexCatalogEntry* entry = _catalog->_entries.find( _indexName );
         invariant( entry == _entry );
 
-        if ( entry ) {
-            _catalog->_dropIndex(_txn, entry);
+        try {
+            if ( entry ) {
+                _catalog->_dropIndex(_txn, entry);
+            }
+            else {
+                _catalog->_deleteIndexFromDisk( _txn,
+                                                _indexName,
+                                                _indexNamespace );
+            }
         }
-        else {
-            _catalog->_deleteIndexFromDisk( _txn,
-                                            _indexName,
-                                            _indexNamespace );
+        catch (const DBException& exc) {
+            error() << "exception while cleaning up in-progress index build: " << exc.what();
+            fassertFailedWithStatus(17493, exc.toStatus());
         }
 
     }
@@ -505,7 +512,7 @@ namespace mongo {
             return Status( ErrorCodes::CannotCreateIndex, "no index name specified" );
 
         string indexNamespace = IndexDescriptor::makeIndexNamespace( specNamespace, name );
-        if ( indexNamespace.length() > Namespace::MaxNsLen )
+        if ( indexNamespace.length() > NamespaceString::MaxNsLen )
             return Status( ErrorCodes::CannotCreateIndex,
                            str::stream() << "namespace name generated from index name \"" <<
                            indexNamespace << "\" is too long (127 byte max)" );
@@ -530,7 +537,7 @@ namespace mongo {
             // we _always_ created _id index
             repl::ReplicationCoordinator* replCoord = repl::getGlobalReplicationCoordinator();
             if (replCoord->getReplicationMode() == repl::ReplicationCoordinator::modeReplSet &&
-                    !repl::theReplSet->buildIndexes()) {
+                    !repl::getGlobalReplicationCoordinator()->buildsIndexes()) {
                 // this is not exactly the right error code, but I think will make the most sense
                 return Status( ErrorCodes::IndexAlreadyExists, "no indexes per repl" );
             }
@@ -691,7 +698,7 @@ namespace mongo {
                 EqualityMatchExpression expr;
                 BSONObj nsBSON = BSON( "ns" << _collection->ns() );
                 invariant( expr.init( "ns", nsBSON.firstElement() ).isOK() );
-                numSystemIndexesEntries = systemIndexes->countTableScan( &expr );
+                numSystemIndexesEntries = systemIndexes->countTableScan( txn, &expr );
             }
             else {
                 // this is ok, 0 is the right number
@@ -733,6 +740,8 @@ namespace mongo {
         if ( !entry->isReady() )
             return Status( ErrorCodes::InternalError, "cannot delete not ready index" );
 
+        BackgroundOperation::assertNoBgOpInProgForNs( _collection->ns().ns() );
+
         return _dropIndex(txn, entry);
     }
 
@@ -749,7 +758,6 @@ namespace mongo {
         if ( !entry )
             return Status( ErrorCodes::BadValue, "IndexCatalog::_dropIndex passed NULL" );
 
-        BackgroundOperation::assertNoBgOpInProgForNs( _collection->ns().ns() );
         _checkMagic();
         Status status = _checkUnfinished();
         if ( !status.isOK() )
@@ -1078,7 +1086,7 @@ namespace mongo {
         }
     }
 
-    Status IndexCatalog::checkNoIndexConflicts( const BSONObj &obj ) {
+    Status IndexCatalog::checkNoIndexConflicts( OperationContext* txn, const BSONObj &obj ) {
         IndexIterator ii = getIndexIterator( true );
         while ( ii.more() ) {
             IndexDescriptor* descriptor = ii.next();
@@ -1096,7 +1104,7 @@ namespace mongo {
             options.dupsAllowed = false;
 
             UpdateTicket ticket;
-            Status ret = iam->validateUpdate(BSONObj(), obj, DiskLoc(), options, &ticket);
+            Status ret = iam->validateUpdate(txn, BSONObj(), obj, DiskLoc(), options, &ticket);
             if ( !ret.isOK() )
                 return ret;
         }

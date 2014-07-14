@@ -30,7 +30,7 @@
 #include <iosfwd>
 #include <string>
 
-#include "bson/util/builder.h"
+#include "mongo/bson/util/builder.h"
 #include "mongo/base/status.h"
 #include "mongo/base/status_with.h"
 
@@ -71,12 +71,12 @@ namespace mongo {
         HostAndPort(const std::string& h, int p);
 
         /**
-         * Returns a HostAndPort based on the contents of serverGlobalParams.bind_ip and
-         * serverGlobalParams.port.
-         *
-         * TODO: Move to serverGlobalParams?
+         * (Re-)initializes this HostAndPort by parsing "s".  Returns
+         * Status::OK on success.  The state of this HostAndPort is unspecified
+         * after initialize() returns a non-OK status, though it is safe to
+         * assign to it or re-initialize it.
          */
-        static HostAndPort me();
+        Status initialize(const StringData& s);
 
         bool operator<(const HostAndPort& r) const;
         bool operator==(const HostAndPort& r) const;
@@ -115,7 +115,6 @@ namespace mongo {
         }
 
     private:
-        Status initialize(const StringData& s);
         std::string _host;
         int _port; // -1 indicates unspecified
     };

@@ -28,7 +28,7 @@
  *    it in the license file.
  */
 
-#include "mongo/db/structure/btree/btree_interface.h"
+#include "mongo/db/storage/sorted_data_interface.h"
 
 #pragma once
 
@@ -47,7 +47,7 @@ namespace mongo {
         virtual unsigned long long commit(bool mayInterrupt) = 0;
     };
 
-    class RocksBtreeImpl : public BtreeInterface {
+    class RocksBtreeImpl : public SortedDataInterface {
     public:
         RocksBtreeImpl( rocksdb::DB* db,
                         rocksdb::ColumnFamilyHandle* cf );
@@ -64,15 +64,17 @@ namespace mongo {
                              const BSONObj& key,
                              const DiskLoc& loc);
 
-        virtual Status dupKeyCheck(const BSONObj& key, const DiskLoc& loc);
+        virtual Status dupKeyCheck(OperationContext* txn,
+                                   const BSONObj& key,
+                                   const DiskLoc& loc);
 
-        virtual void fullValidate(long long* numKeysOut);
+        virtual void fullValidate(OperationContext* txn, long long* numKeysOut);
 
         virtual bool isEmpty();
 
         virtual Status touch(OperationContext* txn) const;
 
-        virtual Cursor* newCursor(int direction) const;
+        virtual Cursor* newCursor(OperationContext* int direction) const;
 
         virtual Status initAsEmpty(OperationContext* txn);
 

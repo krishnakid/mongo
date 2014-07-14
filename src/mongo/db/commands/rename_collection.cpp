@@ -1,7 +1,7 @@
 // rename_collection.cpp
 
 /**
-*    Copyright (C) 2013 10gen Inc.
+*    Copyright (C) 2013-2014 MongoDB Inc.
 *
 *    This program is free software: you can redistribute it and/or  modify
 *    it under the terms of the GNU Affero General Public License, version 3,
@@ -165,8 +165,8 @@ namespace mongo {
                 }
 
                 unsigned int longestAllowed =
-                    min(int(Namespace::MaxNsColletionLen),
-                        int(Namespace::MaxNsLen) - 2/*strlen(".$")*/ - longestIndexNameLength);
+                    min(int(NamespaceString::MaxNsCollectionLen),
+                        int(NamespaceString::MaxNsLen) - 2/*strlen(".$")*/ - longestIndexNameLength);
                 if (target.size() > longestAllowed) {
                     StringBuilder sb;
                     sb << "collection name length of " << target.size()
@@ -181,7 +181,7 @@ namespace mongo {
                     indexesInProg = stopIndexBuilds( txn, srcCtx.db(), cmdObj );
                     capped = sourceColl->isCapped();
                     if ( capped ) {
-                        size = sourceColl->getRecordStore()->storageSize();
+                        size = sourceColl->getRecordStore()->storageSize( txn );
                     }
                 }
             }
@@ -252,7 +252,7 @@ namespace mongo {
             {
                 Client::Context srcCtx(txn, source);
                 sourceColl = srcCtx.db()->getCollection( txn, source );
-                sourceIt.reset( sourceColl->getIterator( DiskLoc(), false, CollectionScanParams::FORWARD ) );
+                sourceIt.reset( sourceColl->getIterator( txn, DiskLoc(), false, CollectionScanParams::FORWARD ) );
             }
 
             Collection* targetColl = NULL;

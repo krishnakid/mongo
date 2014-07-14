@@ -33,8 +33,8 @@
 #include "mongo/base/status.h"
 #include "mongo/base/string_data.h"
 #include "mongo/db/catalog/database_catalog_entry.h"
+#include "mongo/db/storage/mmap_v1/catalog/namespace_index.h"
 #include "mongo/db/storage/mmap_v1/mmap_v1_extent_manager.h"
-#include "mongo/db/structure/catalog/namespace_index.h"
 
 namespace mongo {
 
@@ -101,7 +101,8 @@ namespace mongo {
         const MmapV1ExtentManager* getExtentManager() const { return &_extentManager; }
         MmapV1ExtentManager* getExtentManager() { return &_extentManager; }
 
-        CollectionOptions getCollectionOptions( const StringData& ns ) const;
+        CollectionOptions getCollectionOptions( OperationContext* txn,
+                                                const StringData& ns ) const;
 
     private:
 

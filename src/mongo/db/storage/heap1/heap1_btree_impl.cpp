@@ -200,7 +200,7 @@ namespace {
         return it->loc != loc;
     }
 
-    class Heap1BtreeBuilderImpl : public BtreeBuilderInterface {
+    class Heap1BtreeBuilderImpl : public SortedDataBuilderInterface {
     public:
         Heap1BtreeBuilderImpl(IndexSet* data, bool dupsAllowed)
                 : _data(data),
@@ -241,14 +241,14 @@ namespace {
         bool _committed;
     };
 
-    class Heap1BtreeImpl : public BtreeInterface {
+    class Heap1BtreeImpl : public SortedDataInterface {
     public:
         Heap1BtreeImpl(const IndexCatalogEntry& info, IndexSet* data) 
             : _info(info),
               _data(data)
         {}
 
-        virtual BtreeBuilderInterface* getBulkBuilder(OperationContext* txn, bool dupsAllowed) {
+        virtual SortedDataBuilderInterface* getBulkBuilder(OperationContext* txn, bool dupsAllowed) {
             return new Heap1BtreeBuilderImpl(_data, dupsAllowed);
         }
 
@@ -279,12 +279,12 @@ namespace {
             
         }
 
-        virtual void fullValidate(long long *numKeysOut) {
+        virtual void fullValidate(OperationContext* txn, long long *numKeysOut) {
             // TODO check invariants?
             *numKeysOut = _data->size();
         }
 
-        virtual Status dupKeyCheck(const BSONObj& key, const DiskLoc& loc) {
+        virtual Status dupKeyCheck(OperationContext* txn, const BSONObj& key, const DiskLoc& loc) {
             invariant(!hasFieldNames(key));
             if (isDup(*_data, key, loc))
                 return dupKeyError(key);
@@ -300,10 +300,11 @@ namespace {
             return Status::OK();
         }
 
-        class ForwardCursor : public BtreeInterface::Cursor {
+        class ForwardCursor : public SortedDataInterface::Cursor {
         public:
-            ForwardCursor(const IndexSet& data)
-                : _data(data),
+            ForwardCursor(const IndexSet& data, OperationContext* txn)
+                : _txn(txn),
+                  _data(data),
                   _it(data.end())
             {}
 
@@ -313,7 +314,7 @@ namespace {
                 return _it == _data.end();
             }
 
-            virtual bool pointsToSamePlaceAs(const BtreeInterface::Cursor& otherBase) const {
+            virtual bool pointsToSamePlaceAs(const SortedDataInterface::Cursor& otherBase) const {
                 const ForwardCursor& other = static_cast<const ForwardCursor&>(otherBase);
                 invariant(&_data == &other._data); // iterators over same index
                 return _it == other._it;
@@ -387,6 +388,7 @@ namespace {
             }
 
         private:
+            OperationContext* _txn; // not owned
             const IndexSet& _data;
             IndexSet::const_iterator _it;
 
@@ -397,10 +399,11 @@ namespace {
         };
 
         // TODO see if this can share any code with ForwardIterator
-        class ReverseCursor : public BtreeInterface::Cursor {
+        class ReverseCursor : public SortedDataInterface::Cursor {
         public:
-            ReverseCursor(const IndexSet& data)
-                : _data(data),
+            ReverseCursor(const IndexSet& data, OperationContext* txn)
+                : _txn(txn),
+                  _data(data),
                   _it(data.rend())
             {}
 
@@ -410,7 +413,7 @@ namespace {
                 return _it == _data.rend();
             }
 
-            virtual bool pointsToSamePlaceAs(const BtreeInterface::Cursor& otherBase) const {
+            virtual bool pointsToSamePlaceAs(const SortedDataInterface::Cursor& otherBase) const {
                 const ReverseCursor& other = static_cast<const ReverseCursor&>(otherBase);
                 invariant(&_data == &other._data); // iterators over same index
                 return _it == other._it;
@@ -499,6 +502,7 @@ namespace {
                 return IndexSet::const_reverse_iterator(it);
             }
 
+            OperationContext* _txn; // not owned
             const IndexSet& _data;
             IndexSet::const_reverse_iterator _it;
 
@@ -508,12 +512,12 @@ namespace {
             DiskLoc _savedLoc;
         };
 
-        virtual BtreeInterface::Cursor* newCursor(int direction) const {
+        virtual SortedDataInterface::Cursor* newCursor(OperationContext* txn, int direction) const {
             if (direction == 1)
-                return new ForwardCursor(*_data);
+                return new ForwardCursor(*_data, txn);
 
             invariant(direction == -1);
-            return new ReverseCursor(*_data);
+            return new ReverseCursor(*_data, txn);
         }
 
         virtual Status initAsEmpty(OperationContext* txn) {
@@ -529,7 +533,7 @@ namespace {
 
     // IndexCatalogEntry argument taken by non-const pointer for consistency with other Btree
     // factories. We don't actually modify it.
-    BtreeInterface* getHeap1BtreeImpl(IndexCatalogEntry* info, boost::shared_ptr<void>* dataInOut) {
+    SortedDataInterface* getHeap1BtreeImpl(IndexCatalogEntry* info, boost::shared_ptr<void>* dataInOut) {
         invariant(info);
         invariant(dataInOut);
         if (!*dataInOut) {

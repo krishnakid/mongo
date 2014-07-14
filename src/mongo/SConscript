@@ -7,14 +7,17 @@ import itertools
 from buildscripts import utils
 
 Import("env")
-Import("shellEnv")
-Import("testEnv")
 Import("has_option")
 Import("get_option")
 Import("usev8")
 Import("v8suffix")
 Import("enforce_glibc")
 Import("darwin windows solaris linux nix")
+
+# Boost we need everywhere. 's2' is spammed in all over the place by
+# db/geo unfortunately. pcre is also used many places.
+env.InjectThirdPartyIncludePaths(libraries=['boost', 's2', 'pcre'])
+env.InjectMongoIncludePaths()
 
 env.SConscript(['base/SConscript',
                 'db/auth/SConscript',
@@ -31,8 +34,6 @@ env.SConscript(['base/SConscript',
                 'db/storage/heap1/SConscript',
                 'db/storage/mmap_v1/SConscript',
                 'db/storage/rocks/SConscript',
-                'db/structure/SConscript',
-                'db/structure/btree/SConscript',
                 'db/SConscript',
                 'installer/msi/SConscript',
                 'logger/SConscript',
@@ -97,7 +98,13 @@ env.Library('bson', [
         'bson/bson_validate.cpp',
         'bson/oid.cpp',
         "bson/optime.cpp",
-        'db/jsobj.cpp',
+        'bson/bson_startuptest.cpp',
+        'bson/bsonelement.cpp',
+        'bson/bsonmisc.cpp',
+        'bson/bsonobj.cpp',
+        'bson/bsonobjbuilder.cpp',
+        'bson/bsonobjiterator.cpp',
+        'bson/bsontypes.cpp',
         'db/json.cpp'
         ], LIBDEPS=[
         'base/base',
@@ -140,9 +147,6 @@ env.CppUnitTest('bsonobjbuilder_test', ['bson/bsonobjbuilder_test.cpp'],
 
 env.CppUnitTest('namespacestring_test', ['db/namespace_string_test.cpp'],
                 LIBDEPS=['bson'])
-
-env.CppUnitTest('namespace_test', ['db/structure/catalog/namespace_test.cpp'],
-                LIBDEPS=['foundation'])
 
 env.CppUnitTest('index_set_test', ['db/index_set_test.cpp'],
                 LIBDEPS=['bson','index_set'])
@@ -208,6 +212,7 @@ env.CppUnitTest('expression_parser_test',
 
 
 env.CppUnitTest('bson_extract_test', ['bson/util/bson_extract_test.cpp'], LIBDEPS=['bson'])
+env.CppUnitTest('bson_check_test', ['bson/util/bson_check_test.cpp'], LIBDEPS=['bson'])
 
 env.CppUnitTest('descriptive_stats_test',
                 ['util/descriptive_stats_test.cpp'],
@@ -310,7 +315,6 @@ env.Library('version',
             ])
 commonFiles = [ "pch.cpp",
                 "db/namespace_string.cpp",
-                "db/structure/catalog/namespace.cpp",
                 "shell/mongo.cpp",
                 "util/intrusive_counter.cpp",
                 "util/file_allocator.cpp",
@@ -424,7 +428,9 @@ tcmallocServerStatus = []
 if get_option('allocator') == 'tcmalloc':
     tcmallocServerStatus.append("util/tcmalloc_server_status_section.cpp")
 
-env.Library("coredb", [
+coredbEnv = env.Clone()
+coredbEnv.InjectThirdPartyIncludePaths(libraries=['snappy'])
+coredbEnv.Library("coredb", [
         "client/parallel.cpp",
         "db/audit.cpp",
         "db/commands.cpp",
@@ -513,7 +519,6 @@ if windows:
 
 scripting_common_files = [ "scripting/engine.cpp",
                            "scripting/utils.cpp",
-                           "scripting/bench.cpp",
                            ]
 
 env.Library('bson_template_evaluator', ["scripting/bson_template_evaluator.cpp"],
@@ -522,11 +527,13 @@ env.CppUnitTest('bson_template_evaluator_test', ['scripting/bson_template_evalua
                 LIBDEPS=['bson_template_evaluator'])
 
 if usev8:
-    env.Library('scripting', scripting_common_files + ['scripting/engine_v8' + v8suffix + '.cpp',
-                                                       'scripting/v8' + v8suffix + '_db.cpp',
-                                                       'scripting/v8' + v8suffix + '_utils.cpp',
-                                                       'scripting/v8' + v8suffix +
-                                                       '_profiler.cpp'],
+    scriptingEnv = env.Clone()
+    scriptingEnv.InjectThirdPartyIncludePaths(libraries=['v8'])
+    scriptingEnv.Library('scripting',
+                         scripting_common_files + ['scripting/engine_v8' + v8suffix + '.cpp',
+                                                   'scripting/v8' + v8suffix + '_db.cpp',
+                                                   'scripting/v8' + v8suffix + '_utils.cpp',
+                                                   'scripting/v8' + v8suffix + '_profiler.cpp'],
                  LIBDEPS=['bson_template_evaluator', '$BUILD_DIR/third_party/shim_v8'])
 else:
     env.Library('scripting', scripting_common_files + ['scripting/engine_none.cpp'],
@@ -559,22 +566,8 @@ serverOnlyFiles = [ "db/curop.cpp",
                     "util/logfile.cpp",
                     "util/alignedbuilder.cpp",
                     "util/elapsed_tracker.cpp",
-                    "db/storage/mmap_v1/data_file.cpp",
-                    "db/storage/mmap_v1/durable_mapped_file.cpp",
-                    "db/storage/mmap_v1/dur.cpp",
-                    "db/storage/mmap_v1/durop.cpp",
-                    "db/storage/mmap_v1/dur_writetodatafiles.cpp",
-                    "db/storage/mmap_v1/dur_preplogbuffer.cpp",
-                    "db/storage/mmap_v1/dur_commitjob.cpp",
-                    "db/storage/mmap_v1/dur_recover.cpp",
-                    "db/storage/mmap_v1/dur_journal.cpp",
-                    "db/storage/mmap_v1/dur_recovery_unit.cpp",
-                    "db/storage/mmap_v1/mmap_v1_database_catalog_entry.cpp",
-                    "db/storage/mmap_v1/mmap_v1_engine.cpp",
-                    "db/storage/mmap_v1/repair_database.cpp",
                     "db/storage/storage_engine.cpp",
                     "db/operation_context_impl.cpp",
-                    "db/storage/mmap_v1/mmap_v1_extent_manager.cpp",
                     "db/introspect.cpp",
                     "db/clientcursor.cpp",
                     "db/range_deleter_db_env.cpp",
@@ -621,10 +614,6 @@ serverOnlyFiles = [ "db/curop.cpp",
                     "db/index/haystack_access_method.cpp",
                     "db/index/s2_access_method.cpp",
                     "db/cloner.cpp",
-                    "db/structure/catalog/namespace_details.cpp",
-                    "db/structure/catalog/namespace_details_collection_entry.cpp",
-                    "db/structure/catalog/namespace_details_rsv1_metadata.cpp",
-                    "db/structure/catalog/namespace_index.cpp",
                     "db/dbeval.cpp",
                     "db/dbhelpers.cpp",
                     "db/instance.cpp",
@@ -634,15 +623,14 @@ serverOnlyFiles = [ "db/curop.cpp",
                     "db/catalog/index_catalog_entry.cpp",
                     "db/catalog/index_create.cpp",
                     "db/catalog/collection.cpp",
-                    "db/structure/collection_compact.cpp",
+                    "db/catalog/collection_compact.cpp",
                     "db/catalog/collection_cursor_cache.cpp",
                     "db/catalog/collection_info_cache.cpp",
                     "db/catalog/database_holder.cpp",
                     "db/background.cpp",
-                    "db/structure/catalog/index_details.cpp",
                     "db/index_builder.cpp",
                     "db/index_rebuilder.cpp",
-                    "db/commands/geonear.cpp",
+                    "db/commands/geo_near_cmd.cpp",
                     "db/geo/haystack.cpp",
                     "db/geo/s2common.cpp",
                     "db/ops/delete.cpp",
@@ -845,7 +833,9 @@ if has_option( 'use-cpu-profiler' ):
 env.Library("defaultversion", "s/default_version.cpp")
 
 # Geo
-env.Library("geometry", [ "db/geo/hash.cpp", "db/geo/shapes.cpp", ], LIBDEPS = [ "bson" ])
+env.Library("geometry", [ "db/geo/hash.cpp", "db/geo/shapes.cpp", ], 
+            LIBDEPS = [ "bson",
+                        "$BUILD_DIR/third_party/s2/s2" ])
 env.Library("geoparser", [ "db/geo/geoparser.cpp", ],
             LIBDEPS = [ "bson",
                         "geometry",
@@ -923,6 +913,8 @@ env.CppUnitTest('range_deleter_test',
                     'range_deleter',
                 ])
 
+serveronlyEnv = env.Clone()
+serveronlyEnv.InjectThirdPartyIncludePaths(libraries=['snappy'])
 serveronlyLibdeps = ["coreshard",
                      "db/auth/authmongod",
                      "db/fts/ftsmongod",
@@ -946,20 +938,16 @@ serveronlyLibdeps = ["coreshard",
                      "db/repl/replication_executor",
                      "db/repl/repl_coordinator_impl",
                      "db/repl/repl_coordinator_global",
-                     "db/repl/repl_settings",
                      "db/repl/replication_executor",
-                     'db/storage/mmap_v1/extent',
+                     'db/storage/mmap_v1/storage_mmapv1',
                      'db/storage/heap1/storage_heap1',
-                     'db/structure/record_store',
-                     'db/structure/record_store_v1',
-                     'db/structure/btree/btree',
                      '$BUILD_DIR/third_party/shim_snappy']
 
 if has_option("rocksdb" ):
     serveronlyLibdeps.append( 'db/storage/rocks/storage_rocks' )
 
-env.Library("serveronly", serverOnlyFiles,
-            LIBDEPS=serveronlyLibdeps )
+serveronlyEnv.Library("serveronly", serverOnlyFiles,
+                      LIBDEPS=serveronlyLibdeps )
 
 env.Library("message_server_port", "util/net/message_server_port.cpp")
 
@@ -1107,9 +1095,9 @@ env.Library('mocklib', [
     ],
     LIBDEPS=['clientdriver'])
 
-test = testEnv.Install(
+test = env.Install(
     '#/',
-    testEnv.Program("dbtest",
+    env.Program("dbtest",
                     [ f for f in Glob("dbtests/*.cpp")
                       if not str(f).endswith('framework.cpp') and
                          not str(f).endswith('framework_options.cpp') and
@@ -1132,10 +1120,10 @@ test = testEnv.Install(
                        "$BUILD_DIR/mongo/db/repl/repl_coordinator_global",
                        "$BUILD_DIR/mongo/db/repl/replmocks"]))
 
-if len(testEnv.subst('$PROGSUFFIX')):
-    testEnv.Alias( "dbtest", "#/${PROGPREFIX}dbtest${PROGSUFFIX}" )
+if len(env.subst('$PROGSUFFIX')):
+    env.Alias( "dbtest", "#/${PROGPREFIX}dbtest${PROGSUFFIX}" )
 
-env.Install( '#/', testEnv.Program( "perftest", [ "dbtests/perf/perftest.cpp" ], LIBDEPS=["serveronly", "coreserver", "coredb", "testframework" ] ) )
+env.Install( '#/', env.Program( "perftest", [ "dbtests/perf/perftest.cpp" ], LIBDEPS=["serveronly", "coreserver", "coredb", "testframework" ] ) )
 
 # --- sniffer ---
 mongosniff_built = False
@@ -1184,7 +1172,8 @@ env.JSHeader(
                 "shell/replsetbridge.js"
              ])
 
-coreShellFiles = [ "shell/shell_utils.cpp",
+coreShellFiles = [ "shell/bench.cpp",
+                   "shell/shell_utils.cpp",
                    "shell/shell_utils_extended.cpp",
                    "shell/shell_utils_launcher.cpp",
                    "shell/mongo-server.cpp",
@@ -1193,7 +1182,8 @@ coreShellFiles = [ "shell/shell_utils.cpp",
                    "shell/mk_wcwidth.cpp",
                    "shell/shell_options_init.cpp" ]
 
-if shellEnv is not None:
+if not has_option('noshell'):
+
     env.Library("shell_core", coreShellFiles,
                 LIBDEPS=['clientandshell',
                          'db/index/external_key_generator',
@@ -1204,6 +1194,10 @@ if shellEnv is not None:
     # mongo shell options
     env.Library("shell_options", ["shell/shell_options.cpp"],
                 LIBDEPS=['$BUILD_DIR/mongo/util/options_parser/options_parser_init'])
+
+    shellEnv = env.Clone()
+    if windows:
+        shellEnv.Append(LIBS=["winmm.lib"])
 
     mongo_shell = shellEnv.Program(
         "mongo",
@@ -1268,7 +1262,7 @@ installBinary( env, "mongod" )
 installBinary( env, "mongos" )
 
 if shellEnv is not None:
-    installBinary( env, "mongo" )
+    installBinary( shellEnv, "mongo" )
 
 env.Alias( "core", [ '#/%s' % b for b in [ add_exe( "mongo" ), add_exe( "mongod" ), add_exe( "mongos" ) ] ] )
 
