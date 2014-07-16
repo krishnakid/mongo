@@ -28,16 +28,30 @@
 
 #pragma once
 
+#include <string>
+
 #include "mongo/db/query/st_histogram_cache.h"
 #include "mongo/db/query/query_solution.h"
+#include "mongo/db/query/stage_types.h"
 
 namespace mongo { 
     class Collection;
     
     class SolutionAnalysis {
     public:
+        // stub function that performs index selectivity anaylsis on a set
+        // of ranges for cardinality estimation.
+        //
+        // TODO:  integrate this functionality directly into the query enumerator
         static double analyzeIndexSelectivity(StHistogramCache* histCache,
                                               QuerySolutionNode* solnRoot);
+
+        // debug function -- prints out a DOT graph representation of the 
+        // solution tree passed in.
+        static void dotSolution(QuerySolutionNode* solnRoot);
+    
+    private:
+        static std::string typeToString(StageType ty);
     };
 }
 

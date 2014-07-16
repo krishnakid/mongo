@@ -308,6 +308,7 @@ namespace mongo {
             double cardEsts [solutions.size()];
             log() << "there are  "<< solutions.size() << " candidates solutions" << endl;
             for (size_t ix = 0; ix < solutions.size(); ++ix) {
+                SolutionAnalysis::dotSolution(solutions[ix]->root.get());
                 cardEsts[ix] = SolutionAnalysis::analyzeIndexSelectivity(
                                                     collection->infoCache()->getStHistogramCache(),
                                                     solutions[ix]->root.get());
