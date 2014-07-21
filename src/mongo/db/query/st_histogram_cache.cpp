@@ -80,7 +80,10 @@ namespace mongo {
     int StHistogramCache::createNewHistogram(const BSONObj& keyPattern) { 
         // create a new histogram and add it to the LRUKeyValue cache.
         
-        StHistogram* newHist = new StHistogram(30, 20, -1000, 1000);
+        //StHistogram* newHist = new StHistogram(2000, 20, - std::numeric_limits<double>::max() + 1,
+        //                                     std::numeric_limits<double>::max() - 1);
+        
+        StHistogram* newHist = new StHistogram(40, 20, -900, 1100);
         _cache.insert(std::make_pair(keyPattern, newHist));
 
         log() << "new key added : " << keyPattern << endl;
