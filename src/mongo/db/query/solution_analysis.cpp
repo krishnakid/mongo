@@ -28,12 +28,14 @@
 
 #include "mongo/db/query/solution_analysis.h"
 
+#include <algorithm>
 #include <vector>
 #include <list>
 #include <map>
 #include <string>
 #include <boost/lexical_cast.hpp>
 
+#include "mongo/db/catalog/collection.h"
 #include "mongo/db/exec/st_histogram.h"
 #include "mongo/db/query/query_planner_common.h"
 #include "mongo/db/query/qlog.h"
@@ -86,7 +88,6 @@ namespace mongo {
                 log() << "bounds have more than one interval - ignore during planning stage" << endl;
                 return -1;
             }
-
             std::vector<Interval> intervals = ixBounds.begin()->intervals;
             BSONElement st = intervals.begin()->start;
             BSONElement end = intervals.begin()->end;
@@ -96,13 +97,145 @@ namespace mongo {
             }
             
             std::pair<double, double> numericBounds = std::make_pair(st.numberDouble(),
-                                                                    end.numberDouble() );
+                                                                     end.numberDouble());
 
             double value = ixHist->getFreqOnRange(numericBounds);
             // deal with the index scan logic and histogram prediction
             return value;
         }
 
+    }
+
+
+    // static
+    double SolutionAnalysis::estimateSolutionCost(Collection* coll, QuerySolutionNode* solnRoot) {
+        typedef std::vector<QuerySolutionNode*>::iterator ChildIter;
+
+        std::vector<QuerySolutionNode*> children = solnRoot->children;
+        StageType ty = solnRoot->getType();
+
+        double agg = 0;
+        for (ChildIter i = children.begin(); i != children.end(); ++i) { 
+            agg += estimateSolutionCost(coll, *i);
+        }
+            
+        // core switch statement for recursion.
+        switch (ty) {
+        case STAGE_AND_HASH:
+        case STAGE_AND_SORTED: {
+            // return the minimum cost amongst all children
+            double minCost = estimateSolutionCost(coll, *children.begin());
+            for (ChildIter i = ++children.begin(); i != children.end(); ++i) { 
+                double tCost = estimateSolutionCost(coll, *i);
+                if (tCost < minCost) {
+                    minCost = tCost;
+                }
+            }
+            return 2*minCost;
+        }
+        case STAGE_CACHED_PLAN: 
+            return -1;
+
+        case STAGE_COLLSCAN:
+            // return the number of documents in the collection
+            return static_cast<double>(coll->numRecords());
+
+        case STAGE_COUNT:
+            // this should be thought about in much the same way as the general
+            // IXSCAN, and we can think of this as the cost of an IXSCAN minus the 
+            // penalty incurred for a fetch.
+            return -1;
+
+        case STAGE_DISTINCT:
+            return agg;
+
+        case STAGE_EOF:
+            return 0.0;
+
+        case STAGE_KEEP_MUTATIONS:
+            return agg;
+
+        case STAGE_FETCH:
+            return 2*agg;
+
+        case STAGE_GEO_NEAR_2D:
+        case STAGE_GEO_NEAR_2DSPHERE:
+        case STAGE_IDHACK:
+            return -1;
+
+        case STAGE_IXSCAN: {
+            StHistogramCache* histCache = coll->infoCache()->getStHistogramCache();
+
+            // make a safe type cast
+            IndexScanNode* ixNode = dynamic_cast<IndexScanNode*>(solnRoot);
+            
+            StHistogram* ixHist;
+            int flag = histCache->get(ixNode->indexKeyPattern, &ixHist);
+            if (flag == -1) {
+                return -1;          // return early, no histogram found in cache
+            } 
+            // print out histogram prediction on the simple range
+            
+            std::vector<OrderedIntervalList> ixBounds = ixNode->bounds.fields;
+
+            // TODO: Generalize this to include a full generalization of capabilities.
+            
+            if (ixBounds.size() > 1) { 
+                log() << "compound index - ignoring during planning stage right now" << endl;
+                return -1;
+            }
+            if (ixBounds.begin()->intervals.size() > 1) {
+                log() << "bounds have more than one interval - ignore during planning stage" << endl;
+                return -1;
+            }
+            std::vector<Interval> intervals = ixBounds.begin()->intervals;
+            BSONElement st = intervals.begin()->start;
+            BSONElement end = intervals.begin()->end;
+            if (!st.isNumber() || !end.isNumber()) { 
+                log() << "field bounds are not numeric -- ignore for now" << endl;
+                return -1;
+            }
+            
+            std::pair<double, double> numericBounds = std::make_pair(st.numberDouble(),
+                                                                     end.numberDouble());
+
+            double value = ixHist->getFreqOnRange(numericBounds);
+            // deal with the index scan logic and histogram prediction
+            return value;
+        }
+        case STAGE_LIMIT: {
+            // return min(agg, limit);
+            LimitNode* lm = static_cast<LimitNode*>(solnRoot);
+            return std::min<double>(agg, static_cast<double>(lm->limit));
+        }
+        case STAGE_MOCK:
+        case STAGE_MULTI_PLAN:
+        case STAGE_OPLOG_START:
+            return -1;
+
+        case STAGE_OR:
+            return agg;
+        
+        case STAGE_PROJECTION:
+            return agg;
+
+        case STAGE_SHARDING_FILTER:
+            return -1;
+            
+        case STAGE_SKIP: {
+            // return max(agg - nToSkip, 0) 
+            SkipNode* skp = static_cast<SkipNode*>(solnRoot);
+            return std::max<double>(agg - skp->skip, 0.0);
+        }
+        case STAGE_SORT:
+        case STAGE_SORT_MERGE:
+            return 2*agg;
+
+        case STAGE_SUBPLAN:
+        case STAGE_TEXT:
+        case STAGE_UNKNOWN:
+            return -1;
+        };
     }
 
     // static

@@ -305,28 +305,29 @@ namespace mongo {
             // Using the StHistogramCache, analyze the IndexScan stages of the solutions to prune
             // the plan space before adding to the workingSet
 
-            double cardEsts [solutions.size()];
+            double costEsts [solutions.size()];
             log() << "there are  "<< solutions.size() << " candidates solutions" << endl;
             for (size_t ix = 0; ix < solutions.size(); ++ix) {
                 SolutionAnalysis::dotSolution(solutions[ix]->root.get());
-                cardEsts[ix] = SolutionAnalysis::analyzeIndexSelectivity(
-                                                    collection->infoCache()->getStHistogramCache(),
+                costEsts[ix] = SolutionAnalysis::estimateSolutionCost(
+                                                    collection,
                                                     solutions[ix]->root.get());
-                log() << "estimated cardinality: " << cardEsts[ix] << " for plan:  " 
+                log() << "estimated cost: " << costEsts[ix] << " for plan:  " 
                       << getPlanSummary(*solutions[ix]) << endl;
             }
 
-            int maxCardSol = 0;
+            int minCostSol = 0;
             for (size_t ix = 1; ix < solutions.size(); ++ix) {
-                if (cardEsts[ix] > cardEsts[maxCardSol]) { 
-                    maxCardSol = ix;
+                if (costEsts[ix] < costEsts[minCostSol]) { 
+                    minCostSol = ix;
                 }
             }
             
+            /*
+
             // evict the plan of highest cardinality
             log() << "erasing plan " << getPlanSummary(*solutions[maxCardSol]) << endl;
             solutions.erase(solutions.begin() + maxCardSol);
-
 
             // The working set will be shared by all candidate plans and owned by the containing runner
             WorkingSet* sharedWorkingSet = new WorkingSet();
@@ -354,6 +355,18 @@ namespace mongo {
                                             canonicalQuery.release(),
                                             multiPlanStage->bestSolution(),
                                             multiPlanStage,
+                                            sharedWorkingSet);
+            
+            */
+            
+            WorkingSet* sharedWorkingSet = new WorkingSet();
+            PlanStage* rootPlan;
+            verify(StageBuilder::build(txn, collection, *solutions[minCostSol],
+                                            sharedWorkingSet, &rootPlan));
+            *out = new SingleSolutionRunner(collection,
+                                            canonicalQuery.release(),
+                                            solutions[minCostSol],
+                                            rootPlan,
                                             sharedWorkingSet);
 
             return Status::OK();

@@ -46,6 +46,13 @@ namespace mongo {
         static double analyzeIndexSelectivity(StHistogramCache* histCache,
                                               QuerySolutionNode* solnRoot);
 
+        // estimate the cost of executing the query represented by the 
+        // QuerySolution passed in.
+        //
+        // TODO: extend cost to be an abstract data type
+        static double estimateSolutionCost(Collection* coll,
+                                           QuerySolutionNode* solnRoot);
+
         // debug function -- prints out a DOT graph representation of the 
         // solution tree passed in.
         static void dotSolution(QuerySolutionNode* solnRoot);
