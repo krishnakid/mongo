@@ -33,6 +33,7 @@
 
 #include "mongo/bson/bsonobj.h"
 #include "mongo/db/query/lru_key_value.h"
+#include "mongo/db/query/index_bounds.h"
 
 namespace mongo {
 
@@ -57,8 +58,8 @@ namespace mongo {
 
     // an input struct for the HistogramCache
     struct StHistogramUpdateParams {
-        double start;
-        double end;
+        StHistogramUpdateParams (const IndexBounds&, size_t);    
+        const IndexBounds& bounds;
         size_t nReturned;
     };
 

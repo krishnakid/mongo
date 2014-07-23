@@ -42,6 +42,10 @@
 namespace mongo {
     StHistogramCache::StHistogramCache() : _cache() {}
     
+    StHistogramUpdateParams::StHistogramUpdateParams(const IndexBounds& bounds, size_t nRet):
+                                                     bounds(bounds),
+                                                     nReturned(nRet) {}
+
     int StHistogramCache::get(const BSONObj& keyPattern, StHistogram** value) {
         StHistMap::iterator histEntry = _cache.find(keyPattern);
         if (histEntry == _cache.end()) {
@@ -61,8 +65,7 @@ namespace mongo {
             createNewHistogram(keyPattern);
         }
       
-        log() << "updating " << keyPattern << " with data ( " << params.start << ", " << 
-            params.end << ", " << params.nReturned << " )" << endl;
+        log() << "updating " << keyPattern << endl; 
 
         StHistMap::iterator histEntry = _cache.find(keyPattern);
         histEntry->second->update(params);
@@ -83,7 +86,7 @@ namespace mongo {
         //StHistogram* newHist = new StHistogram(2000, 20, - std::numeric_limits<double>::max() + 1,
         //                                     std::numeric_limits<double>::max() - 1);
         
-        StHistogram* newHist = new StHistogram(40, 20, -900, 1100);
+        StHistogram* newHist = new StHistogram(240, 20, -9000000, 11000000);
         _cache.insert(std::make_pair(keyPattern, newHist));
 
         log() << "new key added : " << keyPattern << endl;
