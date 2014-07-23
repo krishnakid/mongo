@@ -43,71 +43,6 @@
 
 namespace mongo { 
     // static
-    double SolutionAnalysis::analyzeIndexSelectivity(StHistogramCache* histCache,
-                                                         QuerySolutionNode* solnRoot) {
-        typedef std::vector<QuerySolutionNode*>::iterator ChildIter;
-
-        if (solnRoot->getType() != STAGE_IXSCAN) {
-            if (solnRoot->children.size() == 0) {
-                // then there are no children
-                return -1;
-            }
-            double retVal = 0;
-            // recurse through children
-            for (ChildIter it = solnRoot->children.begin(); it != solnRoot->children.end(); it++) {
-                double childVal = analyzeIndexSelectivity(histCache, *it);
-                if (std::min(retVal, childVal) > 0) {
-                    retVal = 0;         // index intersection, ignore for now
-                }
-                else {
-                    retVal = std::max(retVal, childVal);
-                }
-            }
-            return retVal;
-        } 
-        else {
-            // make a safe type cast
-            IndexScanNode* ixNode = dynamic_cast<IndexScanNode*>(solnRoot);
-            
-            StHistogram* ixHist;
-            int flag = histCache->get(ixNode->indexKeyPattern, &ixHist);
-            if (flag == -1) {
-                return -1;          // return early, no histogram found in cache
-            } 
-            // print out histogram prediction on the simple range
-            
-            std::vector<OrderedIntervalList> ixBounds = ixNode->bounds.fields;
-
-            // TODO: Generalize this to include a full generalization of capabilities.
-            
-            if (ixBounds.size() > 1) { 
-                log() << "compound index - ignoring during planning stage right now" << endl;
-                return -1;
-            }
-            if (ixBounds.begin()->intervals.size() > 1) {
-                log() << "bounds have more than one interval - ignore during planning stage" << endl;
-                return -1;
-            }
-            std::vector<Interval> intervals = ixBounds.begin()->intervals;
-            BSONElement st = intervals.begin()->start;
-            BSONElement end = intervals.begin()->end;
-            if (!st.isNumber() || !end.isNumber()) { 
-                log() << "field bounds are not numeric -- ignore for now" << endl;
-                return -1;
-            }
-            
-            std::pair<double, double> numericBounds = std::make_pair(st.numberDouble(),
-                                                                     end.numberDouble());
-
-            double value = ixHist->getFreqOnRange(numericBounds);
-            // deal with the index scan logic and histogram prediction
-            return value;
-        }
-
-    }
-
-
-    // static
     double SolutionAnalysis::estimateSolutionCost(Collection* coll, QuerySolutionNode* solnRoot) {
         typedef std::vector<QuerySolutionNode*>::iterator ChildIter;
 
@@ -175,31 +110,7 @@ namespace mongo {
                 return -1;          // return early, no histogram found in cache
             } 
             // print out histogram prediction on the simple range
-            
-            std::vector<OrderedIntervalList> ixBounds = ixNode->bounds.fields;
-
-            // TODO: Generalize this to include a full generalization of capabilities.
-            
-            if (ixBounds.size() > 1) { 
-                log() << "compound index - ignoring during planning stage right now" << endl;
-                return -1;
-            }
-            if (ixBounds.begin()->intervals.size() > 1) {
-                log() << "bounds have more than one interval - ignore during planning stage" << endl;
-                return -1;
-            }
-            std::vector<Interval> intervals = ixBounds.begin()->intervals;
-            BSONElement st = intervals.begin()->start;
-            BSONElement end = intervals.begin()->end;
-            if (!st.isNumber() || !end.isNumber()) { 
-                log() << "field bounds are not numeric -- ignore for now" << endl;
-                return -1;
-            }
-            
-            std::pair<double, double> numericBounds = std::make_pair(st.numberDouble(),
-                                                                     end.numberDouble());
-
-            double value = ixHist->getFreqOnRange(numericBounds);
+            double value = ixHist->getFreqOnRange(ixNode->bounds);
             // deal with the index scan logic and histogram prediction
             return value;
         }

@@ -36,29 +36,11 @@
 
 namespace mongo {
 
-    // defines a segmented continuous range 
-    //
-    // need to define: >, <, ==, -
-    struct BSONProjection {
-        BSONProjection(BSONElement);
-        int canonVal;
-        int bsonType; 
-        double data;
-    
-        inline double operator-(const BSONProjection& right) const;
-        inline bool operator<(const BSONProjection& right) const;
-        inline bool operator>(const BSONProjection& right) const;
-        inline bool operator>=(const BSONProjection& right) const;
-        inline bool operator<=(const BSONProjection& right) const;
-    };
-    
-    typedef std::pair<double,double> Bounds;
+    struct StHistogramUpdateParams;
     typedef std::list<StHistogramRun>::iterator StHistogramRunIter;
     typedef std::pair<StHistogramRunIter, StHistogramRunIter> MergePair;
 
-    struct StHistogramUpdateParams;
-   
-
+  
     // define StHistogram class wrapper
     class StHistogram {
     public:
@@ -85,7 +67,7 @@ namespace mongo {
         void restructure();
 
         /* request histogram estimate for a given range bound */
-        double getFreqOnRange(Bounds&);
+        double getFreqOnRange(const IndexBounds&);
 
         /* DEBUG : for pretty printing */
         std::string toString() const;
@@ -97,7 +79,10 @@ namespace mongo {
         static bool splitOrderingFunction(const StHistogramRun&, const StHistogramRun&);
 
         /* update step restricted to a single interval */
-        void updateOne(double start, double end, size_t nReturned);
+        void updateOne(BSONProjection start, BSONProjection end, size_t nReturned);
+
+        /* frequency estimation step restricted to a single interval */
+        double getFreqOnOneRange(BSONProjection start, BSONProjection end);
 
         /* merge portion of histogram restructuring */
         void merge(std::list<StHistogramRun>&, std::list<StHistogramRun>&);
@@ -106,7 +91,7 @@ namespace mongo {
         void split(std::list<StHistogramRun>&, std::list<StHistogramRun>&);
 
         /* get initial index containing search term */
-        int getStartIdx(double);
+        int getStartIdx(BSONProjection);
     };
 
     // histogram pretty print overloading

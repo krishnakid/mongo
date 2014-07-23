@@ -26,7 +26,7 @@
  *    it in the license file.
  */
 
-#include "st_histogram.h"
+#include "mongo/db/exec/st_histogram.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -34,7 +34,6 @@
 #include <sstream>
 #include <cmath>
 
-#include "mongo/db/exec/st_histogram_binrun.h"
 #include "mongo/db/query/qlog.h"
 
 namespace mongo { 
@@ -42,36 +41,6 @@ namespace mongo {
     const double StHistogram::kMergeThreshold = 0.00025;    // merge threshold parameter
     const double StHistogram::kSplitThreshold = 0.1;        // split threshold parameter
     const int StHistogram::kMergeInterval = 200;            // merge interval paramter
-
-    // necessary operators for BSONProjection
-    BSONProjection::BSONProjection(BSONElement elem) { 
-        canonVal = elem.canonicalType();
-        bsonType = elem.type();
-        data = elem.number();                               // return 0 if not number
-    }
-
-    inline double BSONProjection::operator-(const BSONProjection& right) const { 
-        if (canonVal != right.canonVal) { 
-            return std::numeric_limits<double>::infinity() * (canonVal - right.canonVal);
-        }
-        return data - right.data;
-    }
-
-    inline bool BSONProjection::operator<=(const BSONProjection& right) const {
-        return canonVal < right.canonVal ? true : data <= right.data;
-    }
-
-    inline bool BSONProjection::operator<(const BSONProjection& right) const {
-        return canonVal < right.canonVal ? true : data < right.data;
-    }
-
-    inline bool BSONProjection::operator>=(const BSONProjection& right) const {
-        return canonVal > right.canonVal ? true : data >= right.data;
-    }
- 
-    inline bool BSONProjection::operator>(const BSONProjection& right) const {
-        return canonVal > right.canonVal ? true : data > right.data;
-    }
 
     // StHistogram constructor
     //
@@ -83,20 +52,30 @@ namespace mongo {
         bounds = new Bounds[nBuckets];
         nObs = 0;
         
+        int NUMBER_DOUBLE_TYPE = 1;     // being short circuited here for testing purposes.
+        int NUMBER_DOUBLE_CANON_TYPE = 10;
+
         // initialize
         double curStart = lowBound;
 
-        double stepSize = (highBound/nBuckets) - (lowBound / nBuckets); 
+        double stepSize = (highBound - lowBound) / nBuckets; 
 
         for (int i = 0; i < nBuckets - 1; i++) {
+            BSONProjection bstart(NUMBER_DOUBLE_CANON_TYPE, NUMBER_DOUBLE_TYPE, curStart);
+            BSONProjection bend(NUMBER_DOUBLE_CANON_TYPE, NUMBER_DOUBLE_TYPE, curStart+stepSize);
+
             freqs[i] = binInit;
-            bounds[i].first = curStart;
-            bounds[i].second = curStart + stepSize;
+            bounds[i].first = bstart;
+            bounds[i].second = bend;
             curStart += stepSize;
         }
+        
+        BSONProjection bstart(NUMBER_DOUBLE_CANON_TYPE, NUMBER_DOUBLE_TYPE, curStart);
+        BSONProjection bend(NUMBER_DOUBLE_CANON_TYPE, NUMBER_DOUBLE_TYPE, highBound);
+
         freqs[nBuckets - 1] = binInit;
-        bounds[nBuckets - 1].first = curStart;
-        bounds[nBuckets - 1].second = highBound;
+        bounds[nBuckets - 1].first = bstart;
+        bounds[nBuckets - 1].second = bend;
     }
 
     // StHistogram destructor
@@ -145,17 +124,19 @@ namespace mongo {
             
             std::vector<Interval> intervals = i->intervals;
             for (IntervalIter j = intervals.begin(); j != intervals.end(); ++j) {
-                updateOne(j->start.number(), j->end.number(), data.nReturned/intervals.size());
+                BSONProjection start(j->start), end(j->end);
+                updateOne(start, end, data.nReturned/intervals.size());
             }
             break;
         }
     }
 
-    void StHistogram::updateOne(double start, double end, size_t nReturned) {
+    void StHistogram::updateOne(BSONProjection start, 
+                                BSONProjection end, 
+                                size_t nReturned) {
         // estimate the result size of the selection using current data
         double est = 0;
         bool doesIntersect [nBuckets];
-        double minIntersect, maxIntersect;
 
         int startIdx = getStartIdx(start);
         if (startIdx == -1) {
@@ -163,14 +144,19 @@ namespace mongo {
         }
 
         for (int i = startIdx; i < nBuckets; i++) {
-            minIntersect = std::max<double>(start, bounds[i].first);
-            maxIntersect = std::min<double>(end, bounds[i].second);
-           
-            double intersectFrac = std::max<double>((maxIntersect - minIntersect) /
+            BSONProjection minIntersect = std::max<BSONProjection>(start, bounds[i].first);
+            BSONProjection maxIntersect = std::min<BSONProjection>(end, bounds[i].second);
+            
+            double intervalWidth = maxIntersect - minIntersect;
+            if (std::isinf(intervalWidth))  {
+                doesIntersect[i] = false; 
+                break;           // crossing type boundary
+            }
+
+            double intersectFrac = std::max<double>(intervalWidth /
                          (bounds[i].second - bounds[i].first), 0.0);
         
-            if (!(doesIntersect[i] = (intersectFrac > 0)))
-                break;
+            if (!(doesIntersect[i] = (intersectFrac > 0)))  break;
 
             est += freqs[i] * intersectFrac;
         }
@@ -181,8 +167,9 @@ namespace mongo {
         // distribute error amongst buckets in proportion to frequency
         for (int i = startIdx; i < nBuckets; i++) {     
             if (doesIntersect[i]) {
-                minIntersect = std::max<double>(start, bounds[i].first);
-                maxIntersect = std::min<double>(end, bounds[i].second);
+                BSONProjection minIntersect = std::max<BSONProjection>(start, bounds[i].first);
+                BSONProjection maxIntersect = std::min<BSONProjection>(end, bounds[i].second);
+                
                 double frac = (maxIntersect - minIntersect + 1) /
                               (bounds[i].second - bounds[i].first + 1);
 
@@ -196,7 +183,7 @@ namespace mongo {
 
     }
 
-    int StHistogram::getStartIdx(double val) { 
+    int StHistogram::getStartIdx(BSONProjection val) { 
         // binary search for start point
         int blo = 0, bhi = nBuckets, probe; 
         int startIdx = -1;
@@ -218,7 +205,6 @@ namespace mongo {
         }
         return startIdx;
     }
-
 
     void StHistogram::merge(std::list<StHistogramRun>& runs, std::list<StHistogramRun>& reclaimed) {
         double totalFreq = 0;
@@ -341,13 +327,36 @@ namespace mongo {
         }
     }
 
-    double StHistogram::getFreqOnRange(Bounds& range) {
+    double StHistogram::getFreqOnRange(const IndexBounds& bounds) { 
+        typedef std::vector<OrderedIntervalList>::iterator KeyFieldIter;
+        typedef std::vector<Interval>::iterator IntervalIter;
+
+        double agg = 0;
+        // one OrderedIntervalList per field in the index key shape
+        std::vector<OrderedIntervalList> fields = bounds.fields; 
+        for (KeyFieldIter i = fields.begin(); i != fields.end(); ++i) {
+            // TODO: this would be the input platform for the multidimensional extension. 
+            
+            std::vector<Interval> intervals = i->intervals;
+            for (IntervalIter j = intervals.begin(); j != intervals.end(); ++j) {
+                BSONProjection start(j->start), end(j->end);
+                agg += getFreqOnOneRange(start, end);
+            }
+            break;
+        }
+        return agg;
+    }
+
+    // returns 0 for intervals spanning multiple type classifications
+    double StHistogram::getFreqOnOneRange(BSONProjection start, BSONProjection end) {
         double freq = 0;
-        int startIdx = getStartIdx(range.first);
+        int startIdx = getStartIdx(start);
 
         for (int i = startIdx; i < nBuckets; i++) {
-            double overlap = std::min(range.second, bounds[i].second) -
-                             std::max(range.first, bounds[i].first);
+            double overlap = std::min(end, bounds[i].second) -
+                             std::max(start, bounds[i].first);
+            if (std::isinf(overlap)) return 0;
+            
             overlap = std::max(overlap / (bounds[i].second-bounds[i].first), 0.0);
             freq += overlap * freqs[i];
             if (overlap == 0) break;
@@ -358,8 +367,8 @@ namespace mongo {
     std::string StHistogram::toString() const {
         std::ostringstream s;
         for(int i = 0; i < nBuckets; i++) {
-            s << bounds[i].first << ","
-              << bounds[i].second << ","
+            s << bounds[i].first.data << ","
+              << bounds[i].second.data << ","
               << freqs[i] << std::endl;
         }
         return s.str();
@@ -368,8 +377,8 @@ namespace mongo {
     std::ostream& operator<<(std::ostream &strm, const StHistogram &hist) {
         std::ostream& retStrm = strm;
         for(int i = 0; i < hist.nBuckets; i++) {
-            retStrm << hist.bounds[i].first << "," 
-                    << hist.bounds[i].second << ","
+            retStrm << hist.bounds[i].first.data << "," 
+                    << hist.bounds[i].second.data << ","
                     << hist.freqs[i] << std::endl;
         }
         return retStrm;

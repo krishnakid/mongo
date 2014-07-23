@@ -28,12 +28,36 @@
 
 #pragma once
 
+#include "mongo/bson/bsonelement.h"
+
 #include <list>
 #include <utility>
 #include <string>
 
 namespace mongo {
-    typedef std::pair<double, double> Bounds;
+    // defines a segmented continuous range 
+    //
+    // need to define: >, <, ==, -
+    struct BSONProjection {
+    public:
+        BSONProjection(BSONElement);
+        BSONProjection(int, int, double);
+        BSONProjection();
+
+        int canonVal;
+        int bsonType; 
+        double data;
+    
+        double operator-(BSONProjection right) const;
+        bool operator<(const BSONProjection& right) const;
+        bool operator>(const BSONProjection& right) const;
+        bool operator>=(const BSONProjection& right) const;
+        bool operator<=(const BSONProjection& right) const;
+        BSONProjection operator+(const double right) const;
+    };
+    
+    typedef std::pair<BSONProjection, BSONProjection> Bounds;
+    typedef std::pair<double, double> FreqBounds;
 
     class StHistogramRun {
     public:
@@ -64,7 +88,7 @@ namespace mongo {
         void printBuckets();
     private:
         std::list<int> _buckets;                    // list of buckets in a run
-        Bounds _freqBounds;                         // frequency (low, high) tuple
+        FreqBounds _freqBounds;                     // frequency (low, high) tuple
         Bounds _rangeBounds;                        // range (low, high) tuple
         double _totalFreq;                          // total frequency sum in the run
     };

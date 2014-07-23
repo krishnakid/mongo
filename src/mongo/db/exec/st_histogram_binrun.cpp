@@ -33,7 +33,47 @@
 #include <string>
 #include <iostream>
 
-namespace mongo {
+namespace mongo { 
+    // necessary operators for BSONProjection
+    BSONProjection::BSONProjection(BSONElement elem) { 
+        canonVal = elem.canonicalType();
+        bsonType = elem.type();
+        data = elem.number();                               // return 0 if not number
+    }
+
+    BSONProjection::BSONProjection(int cv, int bt, double val) : canonVal(cv),
+                                                                 bsonType(bt),
+                                                                 data(val) {}
+
+    BSONProjection::BSONProjection() : canonVal(0), bsonType(0), data(0.0) {}
+    double BSONProjection::operator-(BSONProjection right) const { 
+        if (canonVal != right.canonVal) { 
+            return std::numeric_limits<double>::infinity() * (canonVal - right.canonVal);
+        }
+        return data - right.data;
+    }
+
+    bool BSONProjection::operator<=(const BSONProjection& right) const {
+        return canonVal < right.canonVal ? true : data <= right.data;
+    }
+
+    bool BSONProjection::operator<(const BSONProjection& right) const {
+        return canonVal < right.canonVal ? true : data < right.data;
+    }
+
+    bool BSONProjection::operator>=(const BSONProjection& right) const {
+        return canonVal > right.canonVal ? true : data >= right.data;
+    }
+ 
+    bool BSONProjection::operator>(const BSONProjection& right) const {
+        return canonVal > right.canonVal ? true : data > right.data;
+    }
+ 
+    BSONProjection BSONProjection::operator+(const double right) const { 
+        return BSONProjection(canonVal, bsonType, data + right);
+    }
+
+
     StHistogramRun::StHistogramRun(int bucket, double freq, Bounds bounds) {
         _freqBounds.first = _freqBounds.second = _totalFreq = freq;
         _rangeBounds.first = bounds.first;
@@ -59,11 +99,11 @@ namespace mongo {
 
         double newFreq = getTotalFreq() / (nNew + 1) ;
         double rangeStep = (_rangeBounds.second - _rangeBounds.first) / (nNew + 1);
-        double curStart = _rangeBounds.first;
+        BSONProjection curStart = _rangeBounds.first;
         for (StHistogramRunIter i = runs.begin(); i != runs.end(); i++) { 
             i->setTotalFreq(newFreq);
             i->setRangeBounds(Bounds(curStart, curStart+rangeStep));
-            curStart += rangeStep;
+            curStart = curStart + rangeStep;
         }
 
         // update main object and deal with rounding errors

@@ -39,13 +39,6 @@ namespace mongo {
     
     class SolutionAnalysis {
     public:
-        // stub function that performs index selectivity anaylsis on a set
-        // of ranges for cardinality estimation.
-        //
-        // TODO:  integrate this functionality directly into the query enumerator
-        static double analyzeIndexSelectivity(StHistogramCache* histCache,
-                                              QuerySolutionNode* solnRoot);
-
         // estimate the cost of executing the query represented by the 
         // QuerySolution passed in.
         //
