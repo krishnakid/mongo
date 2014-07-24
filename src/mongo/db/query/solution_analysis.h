@@ -54,7 +54,7 @@ namespace mongo {
 
         // debug function -- prints out a DOT graph representation of the 
         // solution tree passed in.
-        static void dotSolution(QuerySolutionNode* solnRoot);
+        static void dotSolution(Collection* coll, QuerySolutionNode* solnRoot);
     
     private:
         static std::string typeToString(StageType ty);

@@ -310,7 +310,7 @@ namespace mongo {
 
             log() << "there are  "<< solutions.size() << " candidates solutions" << endl;
             for (size_t ix = 0; ix < solutions.size(); ++ix) {
-                SolutionAnalysis::dotSolution(solutions[ix]->root.get());
+                SolutionAnalysis::dotSolution(collection, solutions[ix]->root.get());
                 costEsts[ix] = SolutionAnalysis::estimateSolutionCost(
                                                     collection,
                                                     solutions[ix]->root.get());

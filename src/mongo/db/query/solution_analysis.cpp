@@ -210,13 +210,15 @@ namespace mongo {
     // static
     //
     // assumes graph represented by solnRoot is acyclic
-    void SolutionAnalysis::dotSolution(QuerySolutionNode* solnRoot) {
+    void SolutionAnalysis::dotSolution(Collection* coll, QuerySolutionNode* solnRoot) {
 
         std::vector<QuerySolutionNode*> children = solnRoot->children;
         // need to have some way of assigning unique names to each node
         // when building the actual digraph representation at the end.
         
         std::map<QuerySolutionNode*, string> nameMap;
+        std::map<QuerySolutionNode*, StQuerySolutionCost> costMap;
+
         std::list<std::pair<QuerySolutionNode*, QuerySolutionNode*> > edges;
 
         // depth first traversal assigns names to nodes
@@ -225,6 +227,8 @@ namespace mongo {
         std::list<QuerySolutionNode*> traversal;
 
         nameMap[solnRoot] = typeToString(solnRoot->getType()) + boost::lexical_cast<string>(nameCounter++);
+        costMap[solnRoot] = estimateSolutionCost(coll, solnRoot);
+
         traversal.push_back(solnRoot);
         
         while (!traversal.empty()) {
@@ -235,14 +239,24 @@ namespace mongo {
             for(ChildIt i = children.begin(); i != children.end(); i++) { 
                 edges.push_back(std::make_pair(curNode, *i));
                 nameMap[*i] = typeToString((*i)->getType()) + boost::lexical_cast<string>(nameCounter++);
+                costMap[*i] = estimateSolutionCost(coll, *i);
                 
                 traversal.push_back(*i);
             }
-
             traversal.pop_front();
         }
 
         std::cout << "digraph testGraph {" << std::endl;
+        // enumerate all of the nodes and their names 
+        typedef std::map<QuerySolutionNode*, string>::iterator NodeIter;
+        for (NodeIter i = nameMap.begin(); i != nameMap.end(); ++i) { 
+            std::cout << i->second << "[label=<" << typeToString(i->first->getType())
+                      << "<BR /> <FONT POINT-SIZE=\"10\"> Cost : "
+                      << "{ card : " << costMap[i->first].card 
+                      << " , mem : " << costMap[i->first].mem 
+                      << " , cpu : " << costMap[i->first].cpu << " } "
+                      << "</FONT>>];" << std::endl;
+        }
         // now go through each edge pair and draw it
         typedef std::list<std::pair<QuerySolutionNode*, QuerySolutionNode*> >::iterator EdgeIt;
         for (EdgeIt i = edges.begin(); i != edges.end(); i++) {
