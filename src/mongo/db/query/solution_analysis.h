@@ -37,13 +37,19 @@
 namespace mongo { 
     class Collection;
     
+    struct StQuerySolutionCost { 
+        double card;
+        double mem;
+        double cpu;
+    };
+
     class SolutionAnalysis {
     public:
         // estimate the cost of executing the query represented by the 
         // QuerySolution passed in.
         //
         // TODO: extend cost to be an abstract data type
-        static double estimateSolutionCost(Collection* coll,
+        static StQuerySolutionCost estimateSolutionCost(Collection* coll,
                                            QuerySolutionNode* solnRoot);
 
         // debug function -- prints out a DOT graph representation of the 
@@ -52,6 +58,13 @@ namespace mongo {
     
     private:
         static std::string typeToString(StageType ty);
+
+        /* returns some measurement of the expected number of CPU cycles a match would take
+         * to resolve on a single document
+         */
+        static double estimateMatchCost(MatchExpression* filter);
+
+        static StQuerySolutionCost buildSolutionCost(double card, double mem, double cpu);
     };
 }
 

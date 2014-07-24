@@ -69,6 +69,11 @@ namespace mongo {
         /* request histogram estimate for a given range bound */
         double getFreqOnRange(const IndexBounds&);
 
+        /* get the total number of documents on the index.
+         * note: scans all bins to do this
+         */
+        double getTotalFreq();
+
         /* DEBUG : for pretty printing */
         std::string toString() const;
     private:

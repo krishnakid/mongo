@@ -347,6 +347,14 @@ namespace mongo {
         return agg;
     }
 
+    double StHistogram::getTotalFreq() { 
+        double agg = 0;
+        for (int ix = 0; ix < nBuckets; ++ix) {
+            agg += freqs[ix];
+        }
+        return agg;
+    }
+
     // returns 0 for intervals spanning multiple type classifications
     double StHistogram::getFreqOnOneRange(BSONProjection start, BSONProjection end) {
         double freq = 0;

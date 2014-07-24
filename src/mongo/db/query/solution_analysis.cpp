@@ -42,111 +42,169 @@
 #include "mongo/db/query/stage_types.h"
 
 namespace mongo { 
+    // StQuerySolutionCost datatype
+    StQuerySolutionCost SolutionAnalysis::buildSolutionCost(double card = 0,
+                                                            double mem = 0,
+                                                            double cpu = 0) {
+        StQuerySolutionCost n;
+        n.card = card;
+        n.mem = mem;
+        n.cpu = cpu;
+        return n;
+    }
+    
     // static
-    double SolutionAnalysis::estimateSolutionCost(Collection* coll, QuerySolutionNode* solnRoot) {
+    double SolutionAnalysis::estimateMatchCost(MatchExpression* filter) {
+        if (filter == NULL) {
+            return 0;
+        }
+        if (filter->numChildren() == 0) { 
+            return 1;
+        }
+
+        double agg = 0;
+        std::vector<MatchExpression*> childVect = *(filter->getChildVector());
+        for (size_t ix = 0; ix < childVect.size(); ++ix) { 
+            agg += estimateMatchCost(childVect[ix]);
+        }
+        agg += 1;
+
+        return agg;
+    }
+
+
+    // static
+    StQuerySolutionCost SolutionAnalysis::estimateSolutionCost(Collection* coll, 
+                                                               QuerySolutionNode* solnRoot) {
         typedef std::vector<QuerySolutionNode*>::iterator ChildIter;
 
         std::vector<QuerySolutionNode*> children = solnRoot->children;
         StageType ty = solnRoot->getType();
 
-        double agg = 0;
-        for (ChildIter i = children.begin(); i != children.end(); ++i) { 
-            agg += estimateSolutionCost(coll, *i);
+        double aggCard = 0;
+        double aggMem = 0;
+        double aggCpu = 0;
+
+        // load all children
+        std::vector<StQuerySolutionCost> childCosts (children.size());
+        for (size_t ix = 0; ix < children.size(); ++ix) { 
+            StQuerySolutionCost childCost = estimateSolutionCost(coll, children[ix]);
+            childCosts[ix] = childCost;
+            aggCard += childCost.card;
+            aggMem += childCost.mem;
+            aggCpu += childCost.cpu;
         }
-            
+
         // core switch statement for recursion.
         switch (ty) {
         case STAGE_AND_HASH:
         case STAGE_AND_SORTED: {
-            // return the minimum cost amongst all children
-            double minCost = estimateSolutionCost(coll, *children.begin());
-            for (ChildIter i = ++children.begin(); i != children.end(); ++i) { 
-                double tCost = estimateSolutionCost(coll, *i);
-                if (tCost < minCost) {
-                    minCost = tCost;
+            // return the minimum cost amongst all children            
+            double minCardIx = 0;
+            for (size_t ix = 1; ix < children.size(); ++ix) { 
+                if (childCosts[ix].card < childCosts[minCardIx].card) {
+                    minCardIx = ix;
                 }
             }
-            return 2*minCost;
+            double newCard = childCosts[minCardIx].card;
+            double newMem = aggMem;
+            double newCpu = aggCpu + newCard*estimateMatchCost(solnRoot->filter.get());
+            return buildSolutionCost(newCard, newMem, newCpu);
         }
         case STAGE_CACHED_PLAN: 
-            return -1;
+            return buildSolutionCost();
 
-        case STAGE_COLLSCAN:
+        case STAGE_COLLSCAN: {
             // return the number of documents in the collection
-            return static_cast<double>(coll->numRecords());
-
+            double nRecords = static_cast<double>(coll->numRecords());
+            double avgRecordSize = static_cast<double>(coll->averageObjectSize());
+            double newCard = nRecords;
+            double newMem = aggMem + avgRecordSize*nRecords;
+            double newCpu = aggCpu + newCard*estimateMatchCost(solnRoot->filter.get());
+            return buildSolutionCost(newCard, newMem, newCpu);
+        }
         case STAGE_COUNT:
             // this should be thought about in much the same way as the general
             // IXSCAN, and we can think of this as the cost of an IXSCAN minus the 
             // penalty incurred for a fetch.
-            return -1;
+            break;
 
         case STAGE_DISTINCT:
-            return agg;
+            break;
 
         case STAGE_EOF:
-            return 0.0;
+            return buildSolutionCost();
 
         case STAGE_KEEP_MUTATIONS:
-            return agg;
+            return buildSolutionCost(aggCard, aggMem, aggCpu);
 
-        case STAGE_FETCH:
-            return 2*agg;
-
+        case STAGE_FETCH: {   //TODO
+            double avgRecordSize = static_cast<double>(coll->averageObjectSize());
+            double newCard = aggCard;
+            double newMem = aggMem + newCard*avgRecordSize;
+            double newCpu = aggCpu + newCard*estimateMatchCost(solnRoot->filter.get());
+            return buildSolutionCost(aggCard, newMem, newCpu);
+        }
         case STAGE_GEO_NEAR_2D:
         case STAGE_GEO_NEAR_2DSPHERE:
         case STAGE_IDHACK:
-            return -1;
+            break;
 
         case STAGE_IXSCAN: {
             StHistogramCache* histCache = coll->infoCache()->getStHistogramCache();
-
             // make a safe type cast
-            IndexScanNode* ixNode = dynamic_cast<IndexScanNode*>(solnRoot);
-            
+            IndexScanNode* ixNode = dynamic_cast<IndexScanNode*>(solnRoot); 
+
             StHistogram* ixHist;
             int flag = histCache->get(ixNode->indexKeyPattern, &ixHist);
             if (flag == -1) {
-                return -1;          // return early, no histogram found in cache
+                break;          // return early, no histogram found in cache
             } 
-            // print out histogram prediction on the simple range
-            double value = ixHist->getFreqOnRange(ixNode->bounds);
-            // deal with the index scan logic and histogram prediction
-            return value;
+            double newCard = ixHist->getFreqOnRange(ixNode->bounds);
+        
+            // TODO: this info *has* to be stored somewhere in the Index itself - extract it.
+            double ixSize = ixHist->getTotalFreq();
+
+            double newMem = ixSize + newCard*static_cast<double>(coll->averageObjectSize());
+            double newCpu = std::log(ixSize) * 8;
+            return buildSolutionCost(newCard, newMem, newCpu);
         }
         case STAGE_LIMIT: {
-            // return min(agg, limit);
-            LimitNode* lm = static_cast<LimitNode*>(solnRoot);
-            return std::min<double>(agg, static_cast<double>(lm->limit));
+            LimitNode* lm = static_cast<LimitNode*>(solnRoot); 
+            double newCard = std::min<double>(aggCard, static_cast<double>(lm->limit));
+            return buildSolutionCost(newCard, aggMem, aggCpu);
         }
         case STAGE_MOCK:
         case STAGE_MULTI_PLAN:
         case STAGE_OPLOG_START:
-            return -1;
+            break;
 
         case STAGE_OR:
-            return agg;
+            return buildSolutionCost(aggCard, aggMem, aggCpu);
         
         case STAGE_PROJECTION:
-            return agg;
-
         case STAGE_SHARDING_FILTER:
-            return -1;
+            break;
             
         case STAGE_SKIP: {
             // return max(agg - nToSkip, 0) 
             SkipNode* skp = static_cast<SkipNode*>(solnRoot);
-            return std::max<double>(agg - skp->skip, 0.0);
+            double newCard = std::max<double>(aggCard - skp->skip, 0.0);
+            return buildSolutionCost(newCard, aggMem, aggCpu);
         }
         case STAGE_SORT:
-        case STAGE_SORT_MERGE:
-            return 2*agg;
-
+        case STAGE_SORT_MERGE: {
+            double newCpu = aggCpu + aggCard*std::log(aggCard);
+            return buildSolutionCost(aggCard, aggMem, newCpu);
+        }
         case STAGE_SUBPLAN:
         case STAGE_TEXT:
         case STAGE_UNKNOWN:
-            return -1;
+            break;
         };
+
+        // for not currently implemented code paths
+        return buildSolutionCost();
     }
 
     // static

@@ -305,20 +305,24 @@ namespace mongo {
             // Using the StHistogramCache, analyze the IndexScan stages of the solutions to prune
             // the plan space before adding to the workingSet
 
-            double costEsts [solutions.size()];
+            std::vector<StQuerySolutionCost> costEsts (solutions.size());
+            double costSummaries [solutions.size()];
+
             log() << "there are  "<< solutions.size() << " candidates solutions" << endl;
             for (size_t ix = 0; ix < solutions.size(); ++ix) {
                 SolutionAnalysis::dotSolution(solutions[ix]->root.get());
                 costEsts[ix] = SolutionAnalysis::estimateSolutionCost(
                                                     collection,
                                                     solutions[ix]->root.get());
-                log() << "estimated cost: " << costEsts[ix] << " for plan:  " 
-                      << getPlanSummary(*solutions[ix]) << endl;
+                log() << "estimated cost: " << costEsts[ix].mem + costEsts[ix].cpu 
+                      << " for plan:  " << getPlanSummary(*solutions[ix]) << endl;
+
+                costSummaries[ix] = costEsts[ix].mem + 0.6*costEsts[ix].cpu;
             }
 
             int minCostSol = 0;
             for (size_t ix = 1; ix < solutions.size(); ++ix) {
-                if (costEsts[ix] < costEsts[minCostSol]) { 
+                if (costSummaries[ix] < costSummaries[minCostSol]) { 
                     minCostSol = ix;
                 }
             }
