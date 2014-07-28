@@ -305,74 +305,70 @@ namespace mongo {
             // Using the StHistogramCache, analyze the IndexScan stages of the solutions to prune
             // the plan space before adding to the workingSet
 
-            std::vector<StQuerySolutionCost> costEsts (solutions.size());
-            double costSummaries [solutions.size()];
+            const bool prunePlansWithCost = true;
+            if (prunePlansWithCost) {
+                std::vector<StQuerySolutionCost> costEsts (solutions.size());
+                double costSummaries [solutions.size()];
 
-            log() << "there are  "<< solutions.size() << " candidates solutions" << endl;
-            for (size_t ix = 0; ix < solutions.size(); ++ix) {
-                SolutionAnalysis::dotSolution(collection, solutions[ix]->root.get());
-                costEsts[ix] = SolutionAnalysis::estimateSolutionCost(
-                                                    collection,
-                                                    solutions[ix]->root.get());
-                log() << "estimated cost: " << costEsts[ix].mem + costEsts[ix].cpu 
-                      << " for plan:  " << getPlanSummary(*solutions[ix]) << endl;
+                log() << "there are  "<< solutions.size() << " candidates solutions" << endl;
+                for (size_t ix = 0; ix < solutions.size(); ++ix) {
+                    SolutionAnalysis::dotSolution(collection, solutions[ix]->root.get());
+                    costEsts[ix] = SolutionAnalysis::estimateSolutionCost(
+                                                        collection,
+                                                        solutions[ix]->root.get());
+                    log() << "estimated cost: " << costEsts[ix].mem + costEsts[ix].cpu 
+                          << " for plan:  " << getPlanSummary(*solutions[ix]) << endl;
 
-                costSummaries[ix] = costEsts[ix].mem + 0.6*costEsts[ix].cpu;
-            }
-
-            int minCostSol = 0;
-            for (size_t ix = 1; ix < solutions.size(); ++ix) {
-                if (costSummaries[ix] < costSummaries[minCostSol]) { 
-                    minCostSol = ix;
-                }
-            }
-            
-            /*
-
-            // evict the plan of highest cardinality
-            log() << "erasing plan " << getPlanSummary(*solutions[maxCardSol]) << endl;
-            solutions.erase(solutions.begin() + maxCardSol);
-
-            // The working set will be shared by all candidate plans and owned by the containing runner
-            WorkingSet* sharedWorkingSet = new WorkingSet();
-
-            MultiPlanStage* multiPlanStage = new MultiPlanStage(collection, rawCanonicalQuery);
-
-            for (size_t ix = 0; ix < solutions.size(); ++ix) {
-                if (solutions[ix]->cacheData.get()) {
-                    solutions[ix]->cacheData->indexFilterApplied = plannerParams.indexFiltersApplied;
+                    costSummaries[ix] = costEsts[ix].mem + 0.6*costEsts[ix].cpu;
                 }
 
-                // version of StageBuild::build when WorkingSet is shared
-                PlanStage* nextPlanRoot;
-                verify(StageBuilder::build(txn, collection, *solutions[ix],
-                                           sharedWorkingSet, &nextPlanRoot));
-
-                // Owns none of the arguments
-                multiPlanStage->addPlan(solutions[ix], nextPlanRoot, sharedWorkingSet);
+                int minCostSol = 0;
+                for (size_t ix = 1; ix < solutions.size(); ++ix) {
+                    if (costSummaries[ix] < costSummaries[minCostSol]) { 
+                        minCostSol = ix;
+                    }
+                }
+                 
+                WorkingSet* sharedWorkingSet = new WorkingSet();
+                PlanStage* rootPlan;
+                verify(StageBuilder::build(txn, collection, *solutions[minCostSol],
+                                                sharedWorkingSet, &rootPlan));
+                *out = new SingleSolutionRunner(collection,
+                                                canonicalQuery.release(),
+                                                solutions[minCostSol],
+                                                rootPlan,
+                                                sharedWorkingSet);
             }
+            else {          
+                // The working set will be shared by all candidate plans and owned by the containing runner
+                WorkingSet* sharedWorkingSet = new WorkingSet();
 
-            multiPlanStage->pickBestPlan();
-            multiPlanStage->generateCandidateStats();
+                MultiPlanStage* multiPlanStage = new MultiPlanStage(collection, rawCanonicalQuery);
 
-            *out = new SingleSolutionRunner(collection,
-                                            canonicalQuery.release(),
-                                            multiPlanStage->bestSolution(),
-                                            multiPlanStage,
-                                            sharedWorkingSet);
-            
-            */
-            
-            WorkingSet* sharedWorkingSet = new WorkingSet();
-            PlanStage* rootPlan;
-            verify(StageBuilder::build(txn, collection, *solutions[minCostSol],
-                                            sharedWorkingSet, &rootPlan));
-            *out = new SingleSolutionRunner(collection,
-                                            canonicalQuery.release(),
-                                            solutions[minCostSol],
-                                            rootPlan,
-                                            sharedWorkingSet);
+                for (size_t ix = 0; ix < solutions.size(); ++ix) {
+                    if (solutions[ix]->cacheData.get()) {
+                        solutions[ix]->cacheData->indexFilterApplied = plannerParams.indexFiltersApplied;
+                    }
 
+                    // version of StageBuild::build when WorkingSet is shared
+                    PlanStage* nextPlanRoot;
+                    verify(StageBuilder::build(txn, collection, *solutions[ix],
+                                               sharedWorkingSet, &nextPlanRoot));
+
+                    // Owns none of the arguments
+                    multiPlanStage->addPlan(solutions[ix], nextPlanRoot, sharedWorkingSet);
+                }
+
+                multiPlanStage->pickBestPlan();
+                multiPlanStage->generateCandidateStats();
+
+                *out = new SingleSolutionRunner(collection,
+                                                canonicalQuery.release(),
+                                                multiPlanStage->bestSolution(),
+                                                multiPlanStage,
+                                                sharedWorkingSet);
+                
+            }
             return Status::OK();
         }
     }

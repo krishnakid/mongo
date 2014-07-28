@@ -42,17 +42,6 @@
 #include "mongo/db/query/stage_types.h"
 
 namespace mongo { 
-    // StQuerySolutionCost datatype
-    StQuerySolutionCost SolutionAnalysis::buildSolutionCost(double card = 0,
-                                                            double mem = 0,
-                                                            double cpu = 0) {
-        StQuerySolutionCost n;
-        n.card = card;
-        n.mem = mem;
-        n.cpu = cpu;
-        return n;
-    }
-    
     // static
     double SolutionAnalysis::estimateMatchCost(MatchExpression* filter) {
         if (filter == NULL) {
@@ -106,22 +95,28 @@ namespace mongo {
                     minCardIx = ix;
                 }
             }
-            double newCard = childCosts[minCardIx].card;
-            double newMem = aggMem;
-            double newCpu = aggCpu + newCard*estimateMatchCost(solnRoot->filter.get());
-            return buildSolutionCost(newCard, newMem, newCpu);
+            StQuerySolutionCost s;
+            s.card = childCosts[minCardIx].card;
+            s.mem = aggMem;
+            s.cpu = aggCpu + s.card*estimateMatchCost(solnRoot->filter.get()); 
+            return s;
         }
-        case STAGE_CACHED_PLAN: 
-            return buildSolutionCost();
-
+        case STAGE_CACHED_PLAN: {
+            StQuerySolutionCost s;
+            s.card = 0;
+            s.mem = 0;
+            s.cpu = 0;
+            return s; 
+        }
         case STAGE_COLLSCAN: {
             // return the number of documents in the collection
             double nRecords = static_cast<double>(coll->numRecords());
             double avgRecordSize = static_cast<double>(coll->averageObjectSize());
-            double newCard = nRecords;
-            double newMem = aggMem + avgRecordSize*nRecords;
-            double newCpu = aggCpu + newCard*estimateMatchCost(solnRoot->filter.get());
-            return buildSolutionCost(newCard, newMem, newCpu);
+            StQuerySolutionCost s;
+            s.card = nRecords;
+            s.mem = aggMem + avgRecordSize*nRecords;
+            s.cpu = aggCpu + s.card*estimateMatchCost(solnRoot->filter.get());
+            return s; 
         }
         case STAGE_COUNT:
             // this should be thought about in much the same way as the general
@@ -132,18 +127,26 @@ namespace mongo {
         case STAGE_DISTINCT:
             break;
 
-        case STAGE_EOF:
-            return buildSolutionCost();
-
-        case STAGE_KEEP_MUTATIONS:
-            return buildSolutionCost(aggCard, aggMem, aggCpu);
-
+        case STAGE_EOF: {
+            StQuerySolutionCost s;
+            s.card = 0;
+            s.mem = 0;
+            s.cpu = 0;
+        }
+        case STAGE_KEEP_MUTATIONS: {
+            StQuerySolutionCost s;
+            s.card = aggCard;
+            s.mem = aggMem;
+            s.cpu = aggCpu;
+            return s; 
+        }
         case STAGE_FETCH: {   //TODO
             double avgRecordSize = static_cast<double>(coll->averageObjectSize());
-            double newCard = aggCard;
-            double newMem = aggMem + newCard*avgRecordSize;
-            double newCpu = aggCpu + newCard*estimateMatchCost(solnRoot->filter.get());
-            return buildSolutionCost(aggCard, newMem, newCpu);
+            StQuerySolutionCost s;
+            s.card= aggCard;
+            s.mem = aggMem + s.card*avgRecordSize;
+            s.cpu = aggCpu + s.card*estimateMatchCost(solnRoot->filter.get());
+            return s;
         }
         case STAGE_GEO_NEAR_2D:
         case STAGE_GEO_NEAR_2DSPHERE:
@@ -160,28 +163,38 @@ namespace mongo {
             if (flag == -1) {
                 break;          // return early, no histogram found in cache
             } 
-            double newCard = ixHist->getFreqOnRange(ixNode->bounds);
+            
+            StQuerySolutionCost s;
+
+            s.card = ixHist->getFreqOnRange(ixNode->bounds);
         
             // TODO: this info *has* to be stored somewhere in the Index itself - extract it.
             double ixSize = ixHist->getTotalFreq();
 
-            double newMem = ixSize + newCard*static_cast<double>(coll->averageObjectSize());
-            double newCpu = std::log(ixSize) * 8;
-            return buildSolutionCost(newCard, newMem, newCpu);
+            s.mem = ixSize + s.card*static_cast<double>(coll->averageObjectSize());
+            s.cpu = std::log(ixSize) * 8;
+            return s;
         }
         case STAGE_LIMIT: {
             LimitNode* lm = static_cast<LimitNode*>(solnRoot); 
             double newCard = std::min<double>(aggCard, static_cast<double>(lm->limit));
-            return buildSolutionCost(newCard, aggMem, aggCpu);
+            StQuerySolutionCost s;
+            s.card = newCard;
+            s.mem = aggMem;
+            s.cpu = aggCpu;
+            return s; 
         }
         case STAGE_MOCK:
         case STAGE_MULTI_PLAN:
         case STAGE_OPLOG_START:
             break;
 
-        case STAGE_OR:
-            return buildSolutionCost(aggCard, aggMem, aggCpu);
-        
+        case STAGE_OR: {
+            StQuerySolutionCost s;
+            s.card = aggCard;
+            s.mem = aggMem;
+            s.cpu = aggCpu;
+        } 
         case STAGE_PROJECTION:
         case STAGE_SHARDING_FILTER:
             break;
@@ -189,13 +202,19 @@ namespace mongo {
         case STAGE_SKIP: {
             // return max(agg - nToSkip, 0) 
             SkipNode* skp = static_cast<SkipNode*>(solnRoot);
-            double newCard = std::max<double>(aggCard - skp->skip, 0.0);
-            return buildSolutionCost(newCard, aggMem, aggCpu);
+            StQuerySolutionCost s;
+            s.card = std::max<double>(aggCard - skp->skip, 0.0);
+            s.mem = aggMem;
+            s.cpu = aggCpu;
+            return s;
         }
         case STAGE_SORT:
         case STAGE_SORT_MERGE: {
-            double newCpu = aggCpu + aggCard*std::log(aggCard);
-            return buildSolutionCost(aggCard, aggMem, newCpu);
+            StQuerySolutionCost s;
+            s.card = aggCard;
+            s.mem = aggMem;
+            s.cpu = aggCpu + aggCard*std::log(aggCard);
+            return s;
         }
         case STAGE_SUBPLAN:
         case STAGE_TEXT:
@@ -204,7 +223,11 @@ namespace mongo {
         };
 
         // for not currently implemented code paths
-        return buildSolutionCost();
+        StQuerySolutionCost s;
+        s.card = 0;
+        s.mem = 0;
+        s.card = 0;
+        return s;
     }
 
     // static
@@ -226,7 +249,7 @@ namespace mongo {
         int nameCounter = 0;
         std::list<QuerySolutionNode*> traversal;
 
-        nameMap[solnRoot] = typeToString(solnRoot->getType()) + boost::lexical_cast<string>(nameCounter++);
+        nameMap[solnRoot] = stageTypeString(solnRoot->getType()) + boost::lexical_cast<string>(nameCounter++);
         costMap[solnRoot] = estimateSolutionCost(coll, solnRoot);
 
         traversal.push_back(solnRoot);
@@ -238,7 +261,7 @@ namespace mongo {
             typedef std::vector<QuerySolutionNode*>::iterator ChildIt;
             for(ChildIt i = children.begin(); i != children.end(); i++) { 
                 edges.push_back(std::make_pair(curNode, *i));
-                nameMap[*i] = typeToString((*i)->getType()) + boost::lexical_cast<string>(nameCounter++);
+                nameMap[*i] = stageTypeString((*i)->getType()) + boost::lexical_cast<string>(nameCounter++);
                 costMap[*i] = estimateSolutionCost(coll, *i);
                 
                 traversal.push_back(*i);
@@ -250,7 +273,7 @@ namespace mongo {
         // enumerate all of the nodes and their names 
         typedef std::map<QuerySolutionNode*, string>::iterator NodeIter;
         for (NodeIter i = nameMap.begin(); i != nameMap.end(); ++i) { 
-            std::cout << i->second << "[label=<" << typeToString(i->first->getType())
+            std::cout << i->second << "[label=<" << stageTypeString(i->first->getType())
                       << "<BR /> <FONT POINT-SIZE=\"10\"> Cost : "
                       << "{ card : " << costMap[i->first].card 
                       << " , mem : " << costMap[i->first].mem 
@@ -263,66 +286,6 @@ namespace mongo {
             std::cout << nameMap[(*i).first] << " -> " << nameMap[(*i).second] << ";" << std::endl; 
         }
         std::cout << "}" << std::endl;
-    }
-
-    // private
-    std::string SolutionAnalysis::typeToString(StageType ty) {
-        switch (ty) {
-        case STAGE_AND_HASH:
-            return "AND_HASH";   
-        case STAGE_AND_SORTED:
-            return "AND_SORTED"; 
-        case STAGE_CACHED_PLAN: 
-            return "CACHED_PLAN"; 
-        case STAGE_COLLSCAN:
-            return "COLLSCAN";
-        case STAGE_COUNT:
-            return "COUNT";
-        case STAGE_DISTINCT:
-            return "DISTINCT";
-        case STAGE_EOF:
-            return "EOF";
-        case STAGE_KEEP_MUTATIONS:
-            return "KEEP_MUTATIONS";
-        case STAGE_FETCH:
-            return "FETCH";
-        case STAGE_GEO_NEAR_2D:
-            return "GEO_NEAR_2D";
-        case STAGE_GEO_NEAR_2DSPHERE:
-            return "GEO_NEAR_2DSPHERE";
-        case STAGE_IDHACK:
-            return "IDHACK";
-        case STAGE_IXSCAN:
-            return "IXSCAN";
-        case STAGE_LIMIT:
-            return "LIMIT";
-        case STAGE_MOCK:
-            return "MOCK";
-        case STAGE_MULTI_PLAN:
-            return "MULTI_PLAN";
-        case STAGE_OPLOG_START:
-            return "OPLOG_START";
-        case STAGE_OR:
-            return "OR";
-        case STAGE_PROJECTION:
-            return "PROJECTION";
-        case STAGE_SHARDING_FILTER:
-            return "SHARDING_FILTER";
-        case STAGE_SKIP:
-            return "SKIP";
-        case STAGE_SORT:
-            return "SORT";
-        case STAGE_SORT_MERGE:
-            return "SORT_MERGE";
-        case STAGE_SUBPLAN:
-            return "SUBPLAN";
-        case STAGE_TEXT:
-            return "TEXT";
-        case STAGE_UNKNOWN:
-            return "UNKNOWN";
-        };
-
-    }
-    
+    }   
 }
 

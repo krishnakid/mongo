@@ -44,9 +44,9 @@ namespace mongo {
         BSONProjection(int, int, double);
         BSONProjection();
 
-        int canonVal;
-        int bsonType; 
-        double data;
+        int canonVal;                       // see bsontypes.h:canonicalizeBSONType()
+        int bsonType;                       // see bsontypes.h:enum BSONType{} 
+        double data;                        // BSON value projected onto the set of doubles
     
         double operator-(BSONProjection right) const;
         bool operator<(const BSONProjection& right) const;
@@ -61,6 +61,12 @@ namespace mongo {
 
     class StHistogramRun {
     public:
+        /* defines a run of histogram bins used for calculating merge/split boundaries
+         * during restructuring.
+         *  
+         * See : "Self-tuning Histograms: Building Histograms Without Looking at Data."
+         * (Aboulnaga, Chaudhury, 1999) for algorithm details.
+         */
         StHistogramRun(int bucket, double freq, Bounds bounds);
         
         // accesssors and mutators

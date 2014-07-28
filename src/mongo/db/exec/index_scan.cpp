@@ -136,8 +136,7 @@ namespace mongo {
     void IndexScan::updateStHistogram() { 
         StHistogramCache* histCache = _params.collection->infoCache()->getStHistogramCache();
         // update histogram using params object!
-        StHistogramUpdateParams params (_params.bounds, _commonStats.advanced);
-
+        StHistogramUpdateParams params (&(_params.bounds), _commonStats.advanced);
         histCache->update(_keyPattern, params);
     }
 
@@ -226,12 +225,6 @@ namespace mongo {
     }
 
     bool IndexScan::isEOF() {
-        if (_commonStats.isEOF) {
-            return true;                // deal with state issues caused by Fetch stage
-        }
-        
-        bool isEOF = false;
-
         if (NULL == _indexCursor.get()) {
             // Have to call work() at least once.
             return false;
@@ -240,7 +233,8 @@ namespace mongo {
         // If there's a limit on how many keys we can scan, we may be EOF when we hit that.
         if (0 != _params.maxScan) {
             if (_specificStats.keysExamined >= _params.maxScan) {
-                isEOF = true;
+                updateStHistogram();
+                return true;
             }
         }
 
@@ -248,15 +242,13 @@ namespace mongo {
             return false;
         }
 
-        isEOF = isEOF || _hitEnd || _indexCursor->isEOF();
-        
-        if (isEOF) {
+        if (_hitEnd || _indexCursor->isEOF()) { 
             updateStHistogram();
+            return true;
         }
-
-        return isEOF;
-
-
+        else { 
+            return false;
+        }
     }
 
     void IndexScan::prepareToYield() {

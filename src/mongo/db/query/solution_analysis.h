@@ -37,18 +37,23 @@
 namespace mongo { 
     class Collection;
     
+    extern std::string stageTypeString(StageType ty);
+
     struct StQuerySolutionCost { 
-        double card;
-        double mem;
-        double cpu;
+        StQuerySolutionCost(): card(0), mem(0), cpu(0) {}
+        double card;           // cardinality of a subquery           Valid on: [0, Inf)
+        double mem;            // memory loaded in bytes by subquery  Valid on: [0, Inf)
+        double cpu;            // cpu cycles used by subquery         Valid on: [0, Inf)
     };
 
     class SolutionAnalysis {
+    /* SolutionAnalysis contains a set of functions used by the query planner to estimate
+     * the cost of a query represented by a QuerySolutionNode and use the resulting
+     * cost estimation in planning.
+     */
     public:
         // estimate the cost of executing the query represented by the 
         // QuerySolution passed in.
-        //
-        // TODO: extend cost to be an abstract data type
         static StQuerySolutionCost estimateSolutionCost(Collection* coll,
                                            QuerySolutionNode* solnRoot);
 
@@ -57,14 +62,12 @@ namespace mongo {
         static void dotSolution(Collection* coll, QuerySolutionNode* solnRoot);
     
     private:
-        static std::string typeToString(StageType ty);
-
         /* returns some measurement of the expected number of CPU cycles a match would take
          * to resolve on a single document
+         *
+         * This is currently the number of nodes in a MatchExpression.
          */
         static double estimateMatchCost(MatchExpression* filter);
-
-        static StQuerySolutionCost buildSolutionCost(double card, double mem, double cpu);
     };
 }
 

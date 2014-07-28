@@ -42,59 +42,38 @@
 namespace mongo {
     StHistogramCache::StHistogramCache() : _cache() {}
     
-    StHistogramUpdateParams::StHistogramUpdateParams(const IndexBounds& bounds, size_t nRet):
-                                                     bounds(bounds),
-                                                     nReturned(nRet) {}
-
-    int StHistogramCache::get(const BSONObj& keyPattern, StHistogram** value) {
+    bool StHistogramCache::get(const BSONObj& keyPattern, StHistogram** value) {
         StHistMap::iterator histEntry = _cache.find(keyPattern);
         if (histEntry == _cache.end()) {
-            return -1;      // ERROR, no histogram found for the index
+            return false;      // ERROR, no histogram found for the index
         }
 
         *value = histEntry->second;
-        return 0;
+        return true;
     }
-
-    bool StHistogramCache::contains(const BSONObj& keyPattern) { 
-        return false;
-    }   
 
     void StHistogramCache::update(const BSONObj& keyPattern, const StHistogramUpdateParams& params) {
         if (_cache.find(keyPattern) == _cache.end()) {
             createNewHistogram(keyPattern);
         }
-      
+
         log() << "updating " << keyPattern << endl; 
 
         StHistMap::iterator histEntry = _cache.find(keyPattern);
         histEntry->second->update(params);
 
-        std::ofstream testStream;
+        std::ofstream testStream;                                   // DEBUG log entry
         testStream.open("/data/db/debug.log", std::ofstream::out);
         testStream << *(histEntry->second);
         testStream.close();
     }
 
-    /* called by get() when a histogram is *not* found for a given keyPattern.
-     * lazily creates a new histogram and adds it to the LRU mapping
-     *
-     */
     int StHistogramCache::createNewHistogram(const BSONObj& keyPattern) { 
-        // create a new histogram and add it to the LRUKeyValue cache.
-        
-        //StHistogram* newHist = new StHistogram(2000, 20, - std::numeric_limits<double>::max() + 1,
-        //                                     std::numeric_limits<double>::max() - 1);
-        
         StHistogram* newHist = new StHistogram(240, 20, -9000000, 11000000);
         _cache.insert(std::make_pair(keyPattern, newHist));
 
-        log() << "new key added : " << keyPattern << endl;
-
-        // _cacheVal = new StHistogram(20, 20, - std::numeric_limits<double>::max() + 1,
-        //                                     std::numeric_limits<double>::max() - 1);
+        log() << "new key added : " << keyPattern << endl;          // DEBUG log
         return 0;
     }
-
 
 }

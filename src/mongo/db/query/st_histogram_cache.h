@@ -41,25 +41,28 @@ namespace mongo {
     class BSONObj;
     class Status;
 
-    struct stEqual : std::binary_function<BSONObj, BSONObj, bool> {
+    struct BSONObjEqual : std::binary_function<BSONObj, BSONObj, bool> {
         bool operator()(const BSONObj& b1, const BSONObj& b2) const {
             return b1.equal(b2);
         }
     };
 
-    struct stHash : std::unary_function<BSONObj, std::size_t> {
+    struct BSONObjHash : std::unary_function<BSONObj, std::size_t> {
         std::size_t operator()(const BSONObj& b1) const {
             return b1.hash();
         }
     };
 
     // typedefs for convenient reference
-    typedef boost::unordered_map<BSONObj, StHistogram*, stHash, stEqual> StHistMap;
+    typedef boost::unordered_map<BSONObj, StHistogram*, BSONObjHash, BSONObjEqual> StHistMap;
 
     // an input struct for the HistogramCache
+    // bounds owned by calling IndexScan stage
     struct StHistogramUpdateParams {
-        StHistogramUpdateParams (const IndexBounds&, size_t);    
-        const IndexBounds& bounds;
+        StHistogramUpdateParams (const IndexBounds* bounds, size_t nRet):
+                                                    bounds(bounds),
+                                                    nReturned(nRet) {};    
+        const IndexBounds* bounds;
         size_t nReturned;
     };
 
@@ -68,23 +71,25 @@ namespace mongo {
     public:
         StHistogramCache();
         
-        /* gets the histogram associated with the supplied keyPattern */
-        int get(const BSONObj& keyPattern, StHistogram** value);
-
-        /* asks whether the cache contains a histogram matching the supplied keyPattern */
-        bool contains(const BSONObj& keyPattern);
+        /* gets the histogram associated with the supplied keyPattern 
+         * *value is owned by solution_analysis.cpp when making a prediction for IXSCAN cost
+         */
+        bool get(const BSONObj& keyPattern, StHistogram** value);
 
         /* updates the histogram cached with the supplied keyPattern or creates one
-         * if none exists */
+         * if none exists 
+         * keyPattern corresponds to the index key pattern. 
+         */
         void update(const BSONObj& keyPattern, const StHistogramUpdateParams& params);
 
     private:
-        /* called to create a new histogram when one does not exist for a supplied 
-         * keyPattern in the interface methods */
+        /* called by get() when a histogram is *not* found for a given keyPattern.
+         * lazily creates a new histogram and adds it to the mapping
+         */
         int createNewHistogram(const BSONObj& keyPattern);
-        
+       
+        /* maps from index keyPattern to the StHistogram corresponding to the index. */
         StHistMap _cache;
     };
-
 }
 

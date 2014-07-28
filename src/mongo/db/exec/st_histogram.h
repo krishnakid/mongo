@@ -51,11 +51,6 @@ namespace mongo {
         const static double kSplitThreshold;       // split threshold parameter
         const static int kMergeInterval;           // merge interval parameter
 
-        int nBuckets;                              // number of buckets in the histogram
-        int nObs;                                  // number of observations seen
-        double* freqs;                             // array of value estimations for histogram
-        Bounds* bounds;                            // array of range bounds
-
         /* map an arbitrary BSONElement onto a double while weakly preserving the order
          * defined by woCompare() */
         static double mapBSONElementToDouble(const BSONElement&);
@@ -76,7 +71,15 @@ namespace mongo {
 
         /* DEBUG : for pretty printing */
         std::string toString() const;
+
+        // histogram pretty print overloading
+        friend std::ostream& operator<<(std::ostream &strm, const StHistogram &hist);
     private:
+        int _nBuckets;                             // number of buckets in the histogram
+        int _nObs;                                 // number of observations seen
+        boost::scoped_array<double> _freqs;        // array of value estimations for histogram
+        boost::scoped_array<Bounds> _bounds;       // array of range bounds
+
         /* function used to order runs by range bound for histogram update */
         static bool rangeBoundOrderingFunction(const StHistogramRun&, const StHistogramRun&);
 
@@ -99,6 +102,4 @@ namespace mongo {
         int getStartIdx(BSONProjection);
     };
 
-    // histogram pretty print overloading
-    std::ostream& operator<<(std::ostream &strm, const StHistogram &hist);
 }
