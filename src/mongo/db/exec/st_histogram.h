@@ -77,6 +77,7 @@ namespace mongo {
     private:
         int _nBuckets;                             // number of buckets in the histogram
         int _nObs;                                 // number of observations seen
+        double _totalFreq;                         // sum across all buckets
         boost::scoped_array<double> _freqs;        // array of value estimations for histogram
         boost::scoped_array<Bounds> _bounds;       // array of range bounds
 

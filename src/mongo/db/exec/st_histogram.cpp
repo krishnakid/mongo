@@ -51,6 +51,7 @@ namespace mongo {
     StHistogram::StHistogram(int size, double binInit, double lowBound, double highBound):
                 _nBuckets(size),
                 _nObs(0),
+                _totalFreq(binInit*size),
                 _freqs(new double[_nBuckets]), 
                 _bounds(new Bounds[_nBuckets]) {
         
@@ -172,8 +173,11 @@ namespace mongo {
                 double frac = (maxIntersect - minIntersect + 1) /
                               (_bounds[i].second - _bounds[i].first + 1);
 
-                _freqs[i] = std::max<double>(0.0, _freqs[i] + 
+                double newFreq = std::max<double>(0.0, _freqs[i] + 
                                 (frac * kAlpha * esterr * _freqs[i] /(est)));
+                double delta = newFreq - _freqs[i]; 
+                _totalFreq += delta;
+                _freqs[i] = newFreq;
             }
             else {
                 break;
@@ -347,11 +351,7 @@ namespace mongo {
     }
 
     double StHistogram::getTotalFreq() { 
-        double agg = 0;
-        for (int ix = 0; ix < _nBuckets; ++ix) {
-            agg += _freqs[ix];
-        }
-        return agg;
+        return _totalFreq;
     }
 
     // returns 0 for intervals spanning multiple type classifications
