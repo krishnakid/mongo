@@ -31,7 +31,7 @@
 
 #include <boost/unordered_map.hpp>
 #include <limits>
-#include <fstream>                                  // for debug only
+#include <fstream>
 
 #include "mongo/db/exec/st_histogram.h"
 #include "mongo/db/query/qlog.h"
@@ -41,11 +41,16 @@
 
 namespace mongo {
     StHistogramCache::StHistogramCache() : _cache() {}
-    
+
+    const int StHistogramCache::kInitialHistogramSize = 15;
+    const double StHistogramCache::kInitialHistogramBinValue = 20.0;
+    const double StHistogramCache::kInitialHistogramLowBound = -100.0;
+    const double StHistogramCache::kInitialHistogramHighBound = 200.0;
+   
     bool StHistogramCache::get(const BSONObj& keyPattern, StHistogram** value) {
         StHistMap::iterator histEntry = _cache.find(keyPattern);
         if (histEntry == _cache.end()) {
-            return false;      // ERROR, no histogram found for the index
+            return false;               // ERROR, no histogram found for the index
         }
 
         *value = histEntry->second;
@@ -56,23 +61,21 @@ namespace mongo {
         if (_cache.find(keyPattern) == _cache.end()) {
             createNewHistogram(keyPattern);
         }
-
-        log() << "updating " << keyPattern << endl; 
-
         StHistMap::iterator histEntry = _cache.find(keyPattern);
         histEntry->second->update(params);
-
+        
         std::ofstream testStream;                                   // DEBUG log entry
         testStream.open("/data/db/debug.log", std::ofstream::out);
         testStream << *(histEntry->second);
-        testStream.close();
+        testStream.close(); 
     }
 
     int StHistogramCache::createNewHistogram(const BSONObj& keyPattern) { 
-        StHistogram* newHist = new StHistogram(240, 20, -9000000, 11000000);
+        StHistogram* newHist = new StHistogram(kInitialHistogramSize,
+                                               kInitialHistogramBinValue,
+                                               kInitialHistogramLowBound,
+                                               kInitialHistogramHighBound);
         _cache.insert(std::make_pair(keyPattern, newHist));
-
-        log() << "new key added : " << keyPattern << endl;          // DEBUG log
         return 0;
     }
 

@@ -58,6 +58,9 @@
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 
+#include <ctime>
+#include <iostream>
+
 namespace mongo {
     // The .h for this in find_constants.h.
     const int32_t MaxBytesToReturnToClientAtOnce = 4 * 1024 * 1024;
@@ -440,6 +443,8 @@ namespace mongo {
                             QueryMessage& q,
                             CurOp& curop,
                             Message &result) {
+        std::clock_t startTime = std::clock();              // get the start time. 
+
         // Validate the namespace.
         const char *ns = q.ns;
         uassert(16332, "can't have an empty ns", ns[0]);
@@ -918,6 +923,8 @@ namespace mongo {
 
             }
         }
+
+        std::cout<< std::clock() - startTime << ", " << std::endl;
 
         // curop.debug().exhaust is set above.
         return curop.debug().exhaust ? pq.ns() : "";

@@ -70,9 +70,12 @@ namespace mongo {
     class StHistogramCache { 
     public:
         StHistogramCache();
-        
-        /* gets the histogram associated with the supplied keyPattern 
-         * *value is owned by solution_analysis.cpp when making a prediction for IXSCAN cost
+        const static int kInitialHistogramSize;
+        const static double kInitialHistogramBinValue;
+        const static double kInitialHistogramLowBound;
+        const static double kInitialHistogramHighBound;
+
+        /* loads the histogram associated with the given keypattern into value
          */
         bool get(const BSONObj& keyPattern, StHistogram** value);
 

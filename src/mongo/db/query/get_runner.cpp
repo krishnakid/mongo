@@ -312,11 +312,11 @@ namespace mongo {
 
                 log() << "there are  "<< solutions.size() << " candidates solutions" << endl;
                 for (size_t ix = 0; ix < solutions.size(); ++ix) {
-                    SolutionAnalysis::dotSolution(collection, solutions[ix]->root.get());
+                    //SolutionAnalysis::dotSolution(collection, solutions[ix]->root.get());
                     costEsts[ix] = SolutionAnalysis::estimateSolutionCost(
                                                         collection,
                                                         solutions[ix]->root.get());
-                    log() << "estimated cost: " << costEsts[ix].mem + costEsts[ix].cpu 
+                    log() << "estimated cost: " << costEsts[ix].mem + 0.6*costEsts[ix].cpu 
                           << " for plan:  " << getPlanSummary(*solutions[ix]) << endl;
 
                     costSummaries[ix] = costEsts[ix].mem + 0.6*costEsts[ix].cpu;

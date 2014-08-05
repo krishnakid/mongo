@@ -158,14 +158,12 @@ namespace mongo {
             // make a safe type cast
             IndexScanNode* ixNode = dynamic_cast<IndexScanNode*>(solnRoot); 
 
-            StHistogram* ixHist;
+            StHistogram* ixHist = NULL;
             int flag = histCache->get(ixNode->indexKeyPattern, &ixHist);
-            if (flag == -1) {
+            if (flag == -1 || ixHist == NULL) {
                 break;          // return early, no histogram found in cache
-            } 
-            
+            }  
             StQuerySolutionCost s;
-
             s.card = ixHist->getFreqOnRange(ixNode->bounds);
         
             // TODO: this info *has* to be stored somewhere in the Index itself - extract it.

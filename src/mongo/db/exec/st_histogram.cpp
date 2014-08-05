@@ -81,8 +81,7 @@ namespace mongo {
     }
 
     // StHistogram destructor
-    StHistogram::~StHistogram() {
-    }
+    StHistogram::~StHistogram() {}
 
     bool StHistogram::rangeBoundOrderingFunction(const StHistogramRun& run1,
                                                  const StHistogramRun& run2) {
@@ -114,9 +113,8 @@ namespace mongo {
         if ((_nObs % kMergeInterval) == (kMergeInterval - 1)) {
             restructure(); 
         }
-
         // parse through the IntervalBounds code and send off all assignments
-       
+
         // one OrderedIntervalList per field in the index key shape
         std::vector<OrderedIntervalList> fields = data.bounds->fields; 
         for (KeyFieldIter i = fields.begin(); i != fields.end(); ++i) {
@@ -351,6 +349,13 @@ namespace mongo {
     }
 
     double StHistogram::getTotalFreq() { 
+/*
+        double agg = 0;
+        for (int ix = 0; ix < _nBuckets; ++ix) {
+            agg += _freqs[ix];
+        }
+        return agg;
+*/ 
         return _totalFreq;
     }
 
