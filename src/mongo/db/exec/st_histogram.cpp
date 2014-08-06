@@ -37,8 +37,9 @@
 #include "mongo/db/query/qlog.h"
 
 namespace mongo { 
-    // for details see "Self-tuning Histograms: Building Histograms
-    // Without Looking at Data.
+    // for details see:
+    // Aboulnaga, Ashraf, and Surajit Chaudhuri. "Self-tuning histograms: Building histograms 
+    // without looking at data." ACM SIGMOD Record. Vol. 28. No. 2. ACM, 1999.
     const double StHistogram::kAlpha = 0.5;                 // universal damping term
     const double StHistogram::kMergeThreshold = 0.00025;    // merge threshold parameter
     const double StHistogram::kSplitThreshold = 0.1;        // split threshold parameter
@@ -48,40 +49,50 @@ namespace mongo {
     //
     // might have to get rid of the double lowBound / highBound issue for now
     // change one part at a time.
-    StHistogram::StHistogram(int size, double binInit, double lowBound, double highBound):
-                _nBuckets(size),
+    StHistogram::StHistogram(int size, double binInit):
+                _nBuckets(size*14),                         // bins per region * num regions
                 _nObs(0),
-                _totalFreq(binInit*size),
+                _totalFreq(binInit*size*14),
                 _freqs(new double[_nBuckets]), 
                 _bounds(new Bounds[_nBuckets]) {
+        /////////////// TRUE INIT HERE /////////////////////////////////////
+        // loop through exposed CanonTypes and initialize
+        // see src/mongo/bson/bsontypes.h for details
+        // TODO: extract CanonTypes from bson types so as not to expose raw CanonTypes here
+        //       might become an upkeep nightmare otherwise.
         
-        int NUMBER_DOUBLE_TYPE = 1;     // being short circuited here for testing purposes.
-        int NUMBER_DOUBLE_CANON_TYPE = 10;
+        // there are 14 bsonCanonGroups, will change if bsonspec is edited.
+        
+        for (int bsonCanonGroup = 0; bsonCanonGroup < 14; ++bsonCanonGroup) {
+            int curCanonType = bsonCanonGroup*5;
 
-        // initialize
-        double curStart = lowBound;
-        double stepSize = (highBound - lowBound) / _nBuckets; 
+            int curOffset = bsonCanonGroup*size;
 
-        for (int i = 0; i < _nBuckets - 1; i++) {
-            BSONProjection bstart(NUMBER_DOUBLE_CANON_TYPE, NUMBER_DOUBLE_TYPE, curStart);
-            BSONProjection bend(NUMBER_DOUBLE_CANON_TYPE, NUMBER_DOUBLE_TYPE, curStart+stepSize);
+            BSONProjection bStart, bEnd;
+            int splitFactor = std::pow(std::numeric_limits<double>::max(), 2.0/(size - 1.0));
+            double curStart = - std::numeric_limits<double>::max();
+            int midIndex = (size - 1)/2;
 
-            _freqs[i] = binInit;
-            _bounds[i].first = bstart;
-            _bounds[i].second = bend;
-            curStart += stepSize;
+            for (int i = 0; i < midIndex; ++i) {
+                _freqs[curOffset + i] = binInit;
+                _bounds[curOffset + i].first = BSONProjection(curCanonType, curStart);
+                _bounds[curOffset + i].second = BSONProjection(curCanonType, curStart /= splitFactor);
+            }          
+            _freqs[curOffset + midIndex] = binInit;
+            _bounds[curOffset + midIndex].first = BSONProjection(curCanonType, curStart);
+            _bounds[curOffset + midIndex].second = BSONProjection(curCanonType, curStart = 1);
+
+            for (int i = midIndex + 1; i < size - 1; ++i) {
+                _freqs[curOffset + i] = binInit;
+                _bounds[curOffset + i].first = BSONProjection(curCanonType, curStart);
+                _bounds[curOffset + i].second = BSONProjection(curCanonType, curStart *= splitFactor);
+            }
+
+            _freqs[curOffset + size - 1] = binInit;
+            _bounds[curOffset + size - 1].first = BSONProjection(curCanonType, curStart);            
+            _bounds[curOffset + size - 1].second = BSONProjection(curCanonType, std::numeric_limits<double>::max());
         }
-        
-        BSONProjection bstart(NUMBER_DOUBLE_CANON_TYPE, NUMBER_DOUBLE_TYPE, curStart);
-        BSONProjection bend(NUMBER_DOUBLE_CANON_TYPE, NUMBER_DOUBLE_TYPE, highBound);
-
-        _freqs[_nBuckets - 1] = binInit;
-        _bounds[_nBuckets - 1].first = bstart;
-        _bounds[_nBuckets - 1].second = bend;
     }
-
-    // StHistogram destructor
-    StHistogram::~StHistogram() {}
 
     bool StHistogram::rangeBoundOrderingFunction(const StHistogramRun& run1,
                                                  const StHistogramRun& run2) {
@@ -173,6 +184,7 @@ namespace mongo {
 
                 double newFreq = std::max<double>(0.0, _freqs[i] + 
                                 (frac * kAlpha * esterr * _freqs[i] /(est)));
+
                 double delta = newFreq - _freqs[i]; 
                 _totalFreq += delta;
                 _freqs[i] = newFreq;
@@ -181,7 +193,6 @@ namespace mongo {
                 break;
             }
         }
-
     }
 
     int StHistogram::getStartIdx(BSONProjection val) { 
@@ -389,9 +400,11 @@ namespace mongo {
     std::ostream& operator<<(std::ostream &strm, const StHistogram &hist) {
         std::ostream& retStrm = strm;
         for(int i = 0; i < hist._nBuckets; i++) {
+            if (hist._bounds[i].first.canonVal == 35) {
             retStrm << hist._bounds[i].first.data << "," 
-                    << hist._bounds[i].second.data << ","
+                    << hist._bounds[i].second.data << "," 
                     << hist._freqs[i] << std::endl;
+            }
         }
         return retStrm;
     }

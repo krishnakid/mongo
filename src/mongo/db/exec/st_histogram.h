@@ -44,27 +44,35 @@ namespace mongo {
     // define StHistogram class wrapper
     class StHistogram {
     public:
-        StHistogram(int size, double binInit, double lowBound, double highBound);
-        ~StHistogram();
+        StHistogram(int size, double binInit);
         const static double kAlpha;                // universal damping term
         const static double kMergeThreshold;       // merge threshold parameter
         const static double kSplitThreshold;       // split threshold parameter
         const static int kMergeInterval;           // merge interval parameter
 
-        /* map an arbitrary BSONElement onto a double while weakly preserving the order
-         * defined by woCompare() */
+        /**
+         * map an arbitrary BSONElement onto a double while weakly preserving the order
+         * defined by woCompare() 
+         */
         static double mapBSONElementToDouble(const BSONElement&);
 
-        /* update the histogram with the (lowBound, highBound, nReturned) information */
+        /**
+         * update the histogram with the (lowBound, highBound, nReturned) information 
+         */
         void update(const StHistogramUpdateParams&);
 
-        /* restructure the histogram to achieve higher granularity on high-frequency bins */
+        /**
+         * restructure the histogram to achieve higher granularity on high-frequency bins 
+         */
         void restructure();
 
-        /* request histogram estimate for a given range bound */
+        /**
+         * request histogram estimate for a given range bound 
+         */ 
         double getFreqOnRange(const IndexBounds&);
 
-        /* get the total number of documents on the index.
+        /** 
+         * get the total number of documents on the index.
          * note: scans all bins to do this
          */
         double getTotalFreq();
@@ -72,7 +80,9 @@ namespace mongo {
         /* DEBUG : for pretty printing */
         std::string toString() const;
 
-        // histogram pretty print overloading
+        /**
+         * histogram pretty print overloading
+         */
         friend std::ostream& operator<<(std::ostream &strm, const StHistogram &hist);
     private:
         int _nBuckets;                             // number of buckets in the histogram

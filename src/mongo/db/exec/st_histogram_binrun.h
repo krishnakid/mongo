@@ -41,13 +41,16 @@ namespace mongo {
     struct BSONProjection {
     public:
         BSONProjection(BSONElement);
-        BSONProjection(int, int, double);
+        BSONProjection(int canonType, double projectedValue);
         BSONProjection();
 
         int canonVal;                       // see bsontypes.h:canonicalizeBSONType()
-        int bsonType;                       // see bsontypes.h:enum BSONType{} 
         double data;                        // BSON value projected onto the set of doubles
     
+        /**
+         * set of operators that allow us to easily interact with our BSONProjection objects
+         * as if they were their projected equivalents.
+         */
         double operator-(BSONProjection right) const;
         bool operator<(const BSONProjection& right) const;
         bool operator>(const BSONProjection& right) const;
@@ -61,7 +64,8 @@ namespace mongo {
 
     class StHistogramRun {
     public:
-        /* defines a run of histogram bins used for calculating merge/split boundaries
+        /**
+         * defines a run of histogram bins used for calculating merge/split boundaries
          * during restructuring.
          *  
          * See : "Self-tuning Histograms: Building Histograms Without Looking at Data."

@@ -37,15 +37,13 @@ namespace mongo {
     // necessary operators for BSONProjection
     BSONProjection::BSONProjection(BSONElement elem) { 
         canonVal = elem.canonicalType();
-        bsonType = elem.type();
         data = elem.number();                               // return 0 if not number
     }
 
-    BSONProjection::BSONProjection(int cv, int bt, double val) : canonVal(cv),
-                                                                 bsonType(bt),
-                                                                 data(val) {}
+    BSONProjection::BSONProjection(int cv, double val) : canonVal(cv), data(val) {}
 
-    BSONProjection::BSONProjection() : canonVal(0), bsonType(0), data(0.0) {}
+    BSONProjection::BSONProjection() : canonVal(0), data(0.0) {}
+
     double BSONProjection::operator-(BSONProjection right) const { 
         if (canonVal != right.canonVal) { 
             return std::numeric_limits<double>::infinity() * (canonVal - right.canonVal);
@@ -70,9 +68,8 @@ namespace mongo {
     }
  
     BSONProjection BSONProjection::operator+(const double right) const { 
-        return BSONProjection(canonVal, bsonType, data + right);
+        return BSONProjection(canonVal, data + right);
     }
-
 
     StHistogramRun::StHistogramRun(int bucket, double freq, Bounds bounds) {
         _freqBounds.first = _freqBounds.second = _totalFreq = freq;
@@ -80,18 +77,17 @@ namespace mongo {
         _rangeBounds.second = bounds.second;
         _buckets.push_back(bucket);
     }
+
     // return minimum of maximum differences.
     double StHistogramRun::getMaxDiff (StHistogramRun& run) {
         return std::max(run.getHiFreq() - getLoFreq(),
                         getHiFreq() - run.getLoFreq());
     }
 
-
     void StHistogramRun::setRangeBounds(Bounds nwBnds) {
         _rangeBounds.first = nwBnds.first;
         _rangeBounds.second = nwBnds.second;
     }
-
 
     // split information from local StHistogramRun across external runs
     void StHistogramRun::split (std::list<StHistogramRun>& runs) {

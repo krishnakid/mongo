@@ -42,10 +42,8 @@
 namespace mongo {
     StHistogramCache::StHistogramCache() : _cache() {}
 
-    const int StHistogramCache::kInitialHistogramSize = 15;
+    const int StHistogramCache::kInitialHistogramSize = 200;
     const double StHistogramCache::kInitialHistogramBinValue = 20.0;
-    const double StHistogramCache::kInitialHistogramLowBound = -100.0;
-    const double StHistogramCache::kInitialHistogramHighBound = 200.0;
    
     bool StHistogramCache::get(const BSONObj& keyPattern, StHistogram** value) {
         StHistMap::iterator histEntry = _cache.find(keyPattern);
@@ -72,9 +70,7 @@ namespace mongo {
 
     int StHistogramCache::createNewHistogram(const BSONObj& keyPattern) { 
         StHistogram* newHist = new StHistogram(kInitialHistogramSize,
-                                               kInitialHistogramBinValue,
-                                               kInitialHistogramLowBound,
-                                               kInitialHistogramHighBound);
+                                               kInitialHistogramBinValue);
         _cache.insert(std::make_pair(keyPattern, newHist));
         return 0;
     }
