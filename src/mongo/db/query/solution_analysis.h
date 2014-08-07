@@ -36,7 +36,8 @@
 
 namespace mongo { 
     class Collection;
-    
+
+    /* maps from StageType to a string representing that StageType */
     extern std::string stageTypeString(StageType ty);
 
     struct StQuerySolutionCost { 
@@ -52,17 +53,22 @@ namespace mongo {
      * cost estimation in planning.
      */
     public:
-        // estimate the cost of executing the query represented by the 
-        // QuerySolution passed in.
+        /**
+         * estimate the cost of executing the query represented by the 
+         * QuerySolution passed in.
+         */
         static StQuerySolutionCost estimateSolutionCost(Collection* coll,
                                            QuerySolutionNode* solnRoot);
 
-        // debug function -- prints out a DOT graph representation of the 
-        // solution tree passed in.
+        /**
+         * debug function -- prints out a DOT graph representation of the 
+         * solution tree passed in.
+         */
         static void dotSolution(Collection* coll, QuerySolutionNode* solnRoot);
     
     private:
-        /* returns some measurement of the expected number of CPU cycles a match would take
+        /** 
+         * returns some measurement of the expected number of CPU cycles a match would take
          * to resolve on a single document
          *
          * This is currently the number of nodes in a MatchExpression.
@@ -70,9 +76,4 @@ namespace mongo {
         static double estimateMatchCost(MatchExpression* filter);
     };
 }
-
-
-
-
-
 

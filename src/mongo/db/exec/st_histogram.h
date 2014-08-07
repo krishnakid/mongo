@@ -39,7 +39,6 @@ namespace mongo {
     struct StHistogramUpdateParams;
     typedef std::list<StHistogramRun>::iterator StHistogramRunIter;
     typedef std::pair<StHistogramRunIter, StHistogramRunIter> MergePair;
-
   
     // define StHistogram class wrapper
     class StHistogram {
@@ -50,6 +49,8 @@ namespace mongo {
         const static double kSplitThreshold;       // split threshold parameter
         const static int kMergeInterval;           // merge interval parameter
 
+        const static int kNumComparableGroups;     // number of possible legal values
+                                                   // of a BSON canonical type
         /**
          * map an arbitrary BSONElement onto a double while weakly preserving the order
          * defined by woCompare() 
@@ -58,16 +59,38 @@ namespace mongo {
 
         /**
          * update the histogram with the (lowBound, highBound, nReturned) information 
+         *
+         * Algorithm pseudocode:
+         * 1. estimate result size of query using current histogram
+         * 2. calculate error of estimation as: actual - estimation
+         * 3. Gradient descent in the bin space, where the gradient of the cost function is
+         *      estimated as the proportional contribution of each bin in the histogram to
+         *      a faulty estimate.
          */
         void update(const StHistogramUpdateParams&);
 
         /**
          * restructure the histogram to achieve higher granularity on high-frequency bins 
+         *
+         * Algorithm pseudocode:
+         * ===== MERGE =====
+         * 1. Initialize each bucket in the histogram as a run of buckets.
+         * 2. for every two consective runs, get the maximum difference between a bin in the
+         *      the first run and a bin in the second row.
+         * 3. find the minimum of these maximum differences "minDiff"
+         * 4. if minDiff <= kMergeThreshold * |documents in index|
+         *      merge bins and recalculate minDiff until if condition is false 
+         * ===== SPLIT =====
+         * 5. Set the number of buckets to split as _nBuckets * kSplitThreshold
+         * 6. find set of n buckets to split that were not merged during the previous stage
+         * 7. split buckets chosen into smaller buckets.  Number of buckets to split
+         *      into is proportional to the frequencies contained in the buckets selected for
+         *      splitting. Higher frequency buckets get split into more buckets.
          */
         void restructure();
 
         /**
-         * request histogram estimate for a given range bound 
+         * request histogram estimate for a given set of range bounds
          */ 
         double getFreqOnRange(const IndexBounds&);
 
@@ -100,7 +123,10 @@ namespace mongo {
         /* update step restricted to a single interval */
         void updateOne(BSONProjection start, BSONProjection end, size_t nReturned);
 
-        /* frequency estimation step restricted to a single interval */
+        /**
+         * frequency estimation step restricted to a single interval
+         * returns 0 for intervals spanning multiple type classifications
+         */
         double getFreqOnOneRange(BSONProjection start, BSONProjection end);
 
         /* merge portion of histogram restructuring */

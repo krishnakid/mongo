@@ -45,25 +45,22 @@ namespace mongo {
     const double StHistogram::kSplitThreshold = 0.1;        // split threshold parameter
     const int StHistogram::kMergeInterval = 200;            // merge interval paramter
 
-    // StHistogram constructor
-    //
-    // might have to get rid of the double lowBound / highBound issue for now
-    // change one part at a time.
+    const int StHistogram::kNumComparableGroups = 14;       // number of possible legal values
+                                                            // of a BSON canonical type
+
     StHistogram::StHistogram(int size, double binInit):
-                _nBuckets(size*14),                         // bins per region * num regions
+                _nBuckets(size*kNumComparableGroups), 
                 _nObs(0),
-                _totalFreq(binInit*size*14),
+                _totalFreq(binInit*size*kNumComparableGroups),
                 _freqs(new double[_nBuckets]), 
                 _bounds(new Bounds[_nBuckets]) {
-        /////////////// TRUE INIT HERE /////////////////////////////////////
-        // loop through exposed CanonTypes and initialize
-        // see src/mongo/bson/bsontypes.h for details
         // TODO: extract CanonTypes from bson types so as not to expose raw CanonTypes here
-        //       might become an upkeep nightmare otherwise.
-        
+        //       might become an upkeep nightmare otherwise. 
         // there are 14 bsonCanonGroups, will change if bsonspec is edited.
-        
-        for (int bsonCanonGroup = 0; bsonCanonGroup < 14; ++bsonCanonGroup) {
+       
+        // initialize bins on the representable range of doubles for each of the comparable classes
+        // of BSONtypes 
+        for (int bsonCanonGroup = 0; bsonCanonGroup < kNumComparableGroups; ++bsonCanonGroup) {
             int curCanonType = bsonCanonGroup*5;
 
             int curOffset = bsonCanonGroup*size;
@@ -87,7 +84,6 @@ namespace mongo {
                 _bounds[curOffset + i].first = BSONProjection(curCanonType, curStart);
                 _bounds[curOffset + i].second = BSONProjection(curCanonType, curStart *= splitFactor);
             }
-
             _freqs[curOffset + size - 1] = binInit;
             _bounds[curOffset + size - 1].first = BSONProjection(curCanonType, curStart);            
             _bounds[curOffset + size - 1].second = BSONProjection(curCanonType, std::numeric_limits<double>::max());
@@ -181,7 +177,8 @@ namespace mongo {
                 
                 double frac = (maxIntersect - minIntersect + 1) /
                               (_bounds[i].second - _bounds[i].first + 1);
-
+                    
+                // calculate error terms for heuristic gradient descent
                 double newFreq = std::max<double>(0.0, _freqs[i] + 
                                 (frac * kAlpha * esterr * _freqs[i] /(est)));
 
@@ -232,7 +229,7 @@ namespace mongo {
         // a bucket in the second run
         bool mergeComplete = false;
 
-        while (!mergeComplete) { //  && reclaimed.size() + 1 < runs.size() 
+        while (!mergeComplete) { 
             mergeComplete = true;
             MergePair best;
             double minDiff = std::numeric_limits<double>::infinity();
@@ -262,13 +259,15 @@ namespace mongo {
                 break;                                   // otherwise merged buckets will be split
             }
 
+            // TODO: word this better.
+            // if the minimum of the maximum differences is less than our defined threshold
+            // parameter, merge the two adjacent runs and reclaim the space used to hold them.
             if (minDiff < (kMergeThreshold * totalFreq)) {
                 best.first->merge(*(best.second));          // merge
                 reclaimed.push_back(*(best.second));        // reclaim Run
                 runs.erase(best.second);
                 mergeComplete = false;
             }
-            // and repeat.
         }
     }
 
@@ -324,9 +323,9 @@ namespace mongo {
         std::list<StHistogramRun> reclaimed;            // runs reclaimed
 
         // start algorithm
-        merge(runs, reclaimed);                                    // merge runs
+        merge(runs, reclaimed);                         // merge runs
         runs.sort(splitOrderingFunction);               // order to split
-        split(runs, reclaimed);                                    // split runs
+        split(runs, reclaimed);                         // split runs
         runs.sort(rangeBoundOrderingFunction);          // order to map
 
         // map onto memory allocated for original histogram
@@ -347,7 +346,7 @@ namespace mongo {
         // one OrderedIntervalList per field in the index key shape
         std::vector<OrderedIntervalList> fields = bounds.fields; 
         for (KeyFieldIter i = fields.begin(); i != fields.end(); ++i) {
-            // TODO: this would be the input platform for the multidimensional extension. 
+            // TODO: this would be the place for extention to multidimensional indices
             
             std::vector<Interval> intervals = i->intervals;
             for (IntervalIter j = intervals.begin(); j != intervals.end(); ++j) {
@@ -360,17 +359,9 @@ namespace mongo {
     }
 
     double StHistogram::getTotalFreq() { 
-/*
-        double agg = 0;
-        for (int ix = 0; ix < _nBuckets; ++ix) {
-            agg += _freqs[ix];
-        }
-        return agg;
-*/ 
         return _totalFreq;
     }
 
-    // returns 0 for intervals spanning multiple type classifications
     double StHistogram::getFreqOnOneRange(BSONProjection start, BSONProjection end) {
         double freq = 0;
         int startIdx = getStartIdx(start);
@@ -387,6 +378,7 @@ namespace mongo {
         return freq;
     }
 
+    // DEBUG
     std::string StHistogram::toString() const {
         std::ostringstream s;
         for(int i = 0; i < _nBuckets; i++) {
@@ -397,6 +389,7 @@ namespace mongo {
         return s.str();
     }
 
+    // DEBUG
     std::ostream& operator<<(std::ostream &strm, const StHistogram &hist) {
         std::ostream& retStrm = strm;
         for(int i = 0; i < hist._nBuckets; i++) {

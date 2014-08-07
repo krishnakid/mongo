@@ -35,9 +35,11 @@
 #include <string>
 
 namespace mongo {
-    // defines a segmented continuous range 
-    //
-    // need to define: >, <, ==, -
+    /**
+     * represents a projection from BSONElement space to a (canonVal, data) pair that 
+     * can be used in the StHistogram bin represetation. Ordering and some arithmetic
+     * operators are also defined for use in StHistogram
+     */
     struct BSONProjection {
     public:
         BSONProjection(BSONElement);
@@ -61,16 +63,16 @@ namespace mongo {
     
     typedef std::pair<BSONProjection, BSONProjection> Bounds;
     typedef std::pair<double, double> FreqBounds;
-
+   
+    /**
+     * defines a run of histogram bins used for calculating merge/split boundaries
+     * during restructuring.
+     *  
+     * See : "Self-tuning Histograms: Building Histograms Without Looking at Data."
+     * (Aboulnaga, Chaudhury, 1999) for algorithm details.
+     */
     class StHistogramRun {
     public:
-        /**
-         * defines a run of histogram bins used for calculating merge/split boundaries
-         * during restructuring.
-         *  
-         * See : "Self-tuning Histograms: Building Histograms Without Looking at Data."
-         * (Aboulnaga, Chaudhury, 1999) for algorithm details.
-         */
         StHistogramRun(int bucket, double freq, Bounds bounds);
         
         // accesssors and mutators

@@ -35,12 +35,17 @@
 
 namespace mongo { 
     // necessary operators for BSONProjection
+    //
+    // TODO: code for defining projection should go here. Projection currently is defined as:
+    // /
+    // f(x) = number(x) if x is a numeric type
+    //      | 0         otherwise
     BSONProjection::BSONProjection(BSONElement elem) { 
         canonVal = elem.canonicalType();
         data = elem.number();                               // return 0 if not number
     }
 
-    BSONProjection::BSONProjection(int cv, double val) : canonVal(cv), data(val) {}
+    BSONProjection::BSONProjection(int canonVal, double data) : canonVal(canonVal), data(data) {}
 
     BSONProjection::BSONProjection() : canonVal(0), data(0.0) {}
 
@@ -121,6 +126,7 @@ namespace mongo {
         _rangeBounds.second = std::max(extBounds.second, _rangeBounds.second);
     }
 
+    // DEBUG
     void StHistogramRun::printBuckets() {
         typedef std::list<int>::iterator Iter;
         std::cout << "[" ;

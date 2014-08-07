@@ -133,10 +133,14 @@ namespace mongo {
         }
     }
 
-    void IndexScan::updateStHistogram() { 
+    // TODO: there is no protection or detection here if the histogram is updated twice during
+    // a single run, unsure of how one would be able to add protection, but multiple update does
+    // not cause critical failure due to gradient descent algorithm.
+    void IndexScan::updateStHistogram() {
         StHistogramCache* histCache = _params.collection->infoCache()->getStHistogramCache();
-        // update histogram using params object!
         StHistogramUpdateParams params (&(_params.bounds), _commonStats.advanced);
+
+        // update histogram using params object!
         histCache->update(_keyPattern, params);
     }
 
@@ -233,7 +237,6 @@ namespace mongo {
         // If there's a limit on how many keys we can scan, we may be EOF when we hit that.
         if (0 != _params.maxScan) {
             if (_specificStats.keysExamined >= _params.maxScan) {
-                updateStHistogram();
                 return true;
             }
         }

@@ -31,7 +31,6 @@
 
 #include <boost/unordered_map.hpp>
 #include <limits>
-#include <fstream>
 
 #include "mongo/db/exec/st_histogram.h"
 #include "mongo/db/query/qlog.h"
@@ -40,15 +39,14 @@
 #include "mongo/db/query/lru_key_value.h"
 
 namespace mongo {
-    StHistogramCache::StHistogramCache() : _cache() {}
-
     const int StHistogramCache::kInitialHistogramSize = 200;
     const double StHistogramCache::kInitialHistogramBinValue = 20.0;
    
     bool StHistogramCache::get(const BSONObj& keyPattern, StHistogram** value) {
         StHistMap::iterator histEntry = _cache.find(keyPattern);
         if (histEntry == _cache.end()) {
-            return false;               // ERROR, no histogram found for the index
+            // no histogram found for the index
+            return false;             
         }
 
         *value = histEntry->second;
@@ -61,18 +59,12 @@ namespace mongo {
         }
         StHistMap::iterator histEntry = _cache.find(keyPattern);
         histEntry->second->update(params);
-        
-        std::ofstream testStream;                                   // DEBUG log entry
-        testStream.open("/data/db/debug.log", std::ofstream::out);
-        testStream << *(histEntry->second);
-        testStream.close(); 
     }
 
-    int StHistogramCache::createNewHistogram(const BSONObj& keyPattern) { 
+    void StHistogramCache::createNewHistogram(const BSONObj& keyPattern) { 
         StHistogram* newHist = new StHistogram(kInitialHistogramSize,
                                                kInitialHistogramBinValue);
         _cache.insert(std::make_pair(keyPattern, newHist));
-        return 0;
     }
 
 }

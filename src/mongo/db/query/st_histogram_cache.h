@@ -41,23 +41,38 @@ namespace mongo {
     class BSONObj;
     class Status;
 
+    /**
+     * BSONObj equality function wrapper for creation of an unordered map from BSONObj
+     * to StHistogram*.
+     */
     struct BSONObjEqual : std::binary_function<BSONObj, BSONObj, bool> {
         bool operator()(const BSONObj& b1, const BSONObj& b2) const {
             return b1.equal(b2);
         }
     };
 
+    /**
+     * BSONObj hash function wrapper, mapping BSONObj onto a size_t for internal use in 
+     * the standard library implementation of unordered_map.
+     */
     struct BSONObjHash : std::unary_function<BSONObj, std::size_t> {
         std::size_t operator()(const BSONObj& b1) const {
             return b1.hash();
         }
     };
 
-    // typedefs for convenient reference
+    /**
+     * define a StHistMap as an unordered map from BSONObj -> StHistogram*.  This will be used
+     * to store StHistogram pointers indexed by their keyPattern, which is extracted at query
+     * time.
+     */
     typedef boost::unordered_map<BSONObj, StHistogram*, BSONObjHash, BSONObjEqual> StHistMap;
 
-    // an input struct for the HistogramCache
-    // bounds owned by calling IndexScan stage
+    /**
+     * struct that encapsulates the information requried by an StHistogram to perform an update.
+     * bounds is a set of ordered intervals, and nReturned is a size_t indicating how many
+     * documents were found in the index on those ranges.
+     */
     struct StHistogramUpdateParams {
         StHistogramUpdateParams (const IndexBounds* bounds, size_t nRet):
                                                     bounds(bounds),
@@ -66,30 +81,41 @@ namespace mongo {
         size_t nReturned;
     };
 
-    // acts as an abstraction layer for the management of StHistograms 
+    /**
+     * StHistogramCache lives in the CollectionInfoCache and does memory managment for creation
+     * of StHistograms associated with different keyPatterns.  It also acts as the interface
+     * layer for the query planner when it tries to make predictions for IXSCAN cardinality.
+     * 
+     * It is perhaps badly named, probably closer to a StHistogramMap but named it
+     * StHistogramCache because of where it lives (and the fact it is not persisted to disk).
+     */
     class StHistogramCache { 
     public:
-        StHistogramCache();
-        const static int kInitialHistogramSize;
-        const static double kInitialHistogramBinValue;
-        const static double kInitialHistogramLowBound;
-        const static double kInitialHistogramHighBound;
+        const static int kInitialHistogramSize;                 // number of bins per type range
+        const static double kInitialHistogramBinValue;          // initialization frequency for 
+                                                                // histogram bins
 
-        /* loads the histogram associated with the given keypattern into value
+        /**
+         * loads the histogram associated with the given keyPattern into value.  
+         * Returns: 
+         * true     if the histogram was found and successfully loaded
+         * false    if a histogram could not be found matching the supplied keyPattern
          */
         bool get(const BSONObj& keyPattern, StHistogram** value);
 
-        /* updates the histogram cached with the supplied keyPattern or creates one
+        /** 
+         * updates the histogram cached with the supplied keyPattern or creates one
          * if none exists 
          * keyPattern corresponds to the index key pattern. 
          */
         void update(const BSONObj& keyPattern, const StHistogramUpdateParams& params);
 
     private:
-        /* called by get() when a histogram is *not* found for a given keyPattern.
-         * lazily creates a new histogram and adds it to the mapping
+        /** 
+         * called by get() when a histogram is *not* found for a given keyPattern.
+         * creates a new histogram and adds it to the mapping
          */
-        int createNewHistogram(const BSONObj& keyPattern);
+        void createNewHistogram(const BSONObj& keyPattern);
        
         /* maps from index keyPattern to the StHistogram corresponding to the index. */
         StHistMap _cache;
