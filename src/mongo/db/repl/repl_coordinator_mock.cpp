@@ -50,17 +50,12 @@ namespace repl {
         // TODO
     }
 
-    bool ReplicationCoordinatorMock::isShutdownOkay() const {
-        // TODO
-        return false;
-    }
-
     ReplSettings& ReplicationCoordinatorMock::getSettings() {
         return _settings;
     }
 
     bool ReplicationCoordinatorMock::isReplEnabled() const {
-        return false;
+        return _settings.usingReplSets() || _settings.master || _settings.slave;
     }
 
     ReplicationCoordinator::Mode ReplicationCoordinatorMock::getReplicationMode() const {
@@ -87,13 +82,15 @@ namespace repl {
         return StatusAndDuration(Status::OK(), Milliseconds(0));
     }
 
-    Status ReplicationCoordinatorMock::stepDown(bool force,
+    Status ReplicationCoordinatorMock::stepDown(OperationContext* txn,
+                                                bool force,
                                                 const Milliseconds& waitTime,
                                                 const Milliseconds& stepdownTime) {
         return Status::OK();
     }
 
     Status ReplicationCoordinatorMock::stepDownAndWaitForSecondary(
+            OperationContext* txn,
             const Milliseconds& initialWaitTime,
             const Milliseconds& stepdownTime,
             const Milliseconds& postStepdownWaitTime) {
@@ -110,7 +107,9 @@ namespace repl {
         return true;
     }
 
-    Status ReplicationCoordinatorMock::canServeReadsFor(const NamespaceString& ns, bool slaveOk) {
+    Status ReplicationCoordinatorMock::canServeReadsFor(OperationContext* txn,
+                                                        const NamespaceString& ns,
+                                                        bool slaveOk) {
         // TODO
         return Status::OK();
     }
@@ -120,7 +119,8 @@ namespace repl {
         return false;
     }
 
-    Status ReplicationCoordinatorMock::setLastOptime(const OID& rid,
+    Status ReplicationCoordinatorMock::setLastOptime(OperationContext* txn,
+                                                     const OID& rid,
                                                      const OpTime& ts) {
         // TODO
         return Status::OK();
@@ -131,11 +131,27 @@ namespace repl {
         return OID();
     }
 
-    void ReplicationCoordinatorMock::processReplSetGetStatus(BSONObjBuilder* result) {
-        //TODO
+    OID ReplicationCoordinatorMock::getMyRID(OperationContext* txn) {
+        return OID();
     }
 
-    bool ReplicationCoordinatorMock::setMaintenanceMode(bool activate) {
+    void ReplicationCoordinatorMock::prepareReplSetUpdatePositionCommand(
+            OperationContext* txn,
+            BSONObjBuilder* cmdBuilder) {}
+
+    void ReplicationCoordinatorMock::prepareReplSetUpdatePositionCommandHandshakes(
+            OperationContext* txn,
+            std::vector<BSONObj>* handshakes) {}
+
+    void ReplicationCoordinatorMock::processReplSetGetConfig(BSONObjBuilder* result) {
+        // TODO
+    }
+
+    Status ReplicationCoordinatorMock::processReplSetGetStatus(BSONObjBuilder* result) {
+        return Status::OK();
+    }
+
+    bool ReplicationCoordinatorMock::setMaintenanceMode(OperationContext* txn, bool activate) {
         // TODO
         return false;
     }
@@ -146,7 +162,8 @@ namespace repl {
         return Status::OK();
     }
 
-    Status ReplicationCoordinatorMock::processReplSetMaintenance(bool activate,
+    Status ReplicationCoordinatorMock::processReplSetMaintenance(OperationContext* txn,
+                                                                 bool activate,
                                                                  BSONObjBuilder* resultObj) {
         // TODO
         return Status::OK();
@@ -157,8 +174,8 @@ namespace repl {
         return Status::OK();
     }
 
-    Status ReplicationCoordinatorMock::processHeartbeat(const BSONObj& cmdObj, 
-                                                      BSONObjBuilder* resultObj) {
+    Status ReplicationCoordinatorMock::processHeartbeat(const ReplSetHeartbeatArgs& args,
+                                                        ReplSetHeartbeatResponse* response) {
         return Status::OK();
     }
 
@@ -191,23 +208,16 @@ namespace repl {
         return Status::OK();
     }
 
-    Status ReplicationCoordinatorMock::processReplSetUpdatePosition(const BSONArray& updates,
-                                                                    BSONObjBuilder* resultObj) {
+    Status ReplicationCoordinatorMock::processReplSetUpdatePosition(
+            OperationContext* txn,
+            const UpdatePositionArgs& updates) {
         // TODO
         return Status::OK();
     }
 
-    Status ReplicationCoordinatorMock::processReplSetUpdatePositionHandshake(
-            const BSONObj& handshake,
-            BSONObjBuilder* resultObj) {
-        // TODO
+    Status ReplicationCoordinatorMock::processHandshake(const OperationContext* txn,
+                                                        const HandshakeArgs& handshake) {
         return Status::OK();
-    }
-
-    bool ReplicationCoordinatorMock::processHandshake(const OID& remoteID,
-                                                      const BSONObj& handshake) {
-        // TODO
-        return false;
     }
 
     void ReplicationCoordinatorMock::waitUpToOneSecondForOptimeChange(const OpTime& ot) {
@@ -223,5 +233,21 @@ namespace repl {
         // TODO
         return std::vector<BSONObj>();
     }
+
+    Status ReplicationCoordinatorMock::checkIfWriteConcernCanBeSatisfied(
+            const WriteConcernOptions& writeConcern) const {
+        return Status::OK();
+    }
+
+    BSONObj ReplicationCoordinatorMock::getGetLastErrorDefault() {
+        // TODO
+        return BSONObj();
+    }
+
+    Status ReplicationCoordinatorMock::checkReplEnabledForCommand(BSONObjBuilder* result) {
+        // TODO
+        return Status::OK();
+    }
+
 } // namespace repl
 } // namespace mongo

@@ -291,7 +291,8 @@ namespace mongo {
                 //
 
                 ChunkVersion latestShardVersion;
-                shardingState.refreshMetadataIfNeeded( request.getTargetingNS(),
+                shardingState.refreshMetadataIfNeeded( _txn,
+                                                       request.getTargetingNS(),
                                                        requestMetadata->getShardVersion(),
                                                        &latestShardVersion );
 
@@ -856,9 +857,7 @@ namespace mongo {
 
         WriteOpResult result;
 
-        WriteUnitOfWork wunit(_txn->recoveryUnit());
         multiUpdate( _txn, updateItem, &result );
-        wunit.commit();
 
         if ( !result.getStats().upsertedID.isEmpty() ) {
             *upsertedId = result.getStats().upsertedID;
@@ -1087,7 +1086,7 @@ namespace mongo {
                              WriteOpResult* result ) {
 
         const NamespaceString nsString(updateItem.getRequest()->getNS());
-        UpdateRequest request(nsString);
+        UpdateRequest request(txn, nsString);
         request.setQuery(updateItem.getUpdate()->getQuery());
         request.setUpdates(updateItem.getUpdate()->getUpdateExpr());
         request.setMulti(updateItem.getUpdate()->getMulti());
@@ -1107,14 +1106,13 @@ namespace mongo {
         Lock::DBWrite writeLock(txn->lockState(), nsString.ns(), useExperimentalDocLocking);
         ///////////////////////////////////////////
 
-        WriteUnitOfWork wunit(txn->recoveryUnit());
         if (!checkShardVersion(txn, &shardingState, *updateItem.getRequest(), result))
             return;
 
         Client::Context ctx(txn, nsString.ns(), false /* don't check version */);
 
         try {
-            UpdateResult res = executor.execute(txn, ctx.db());
+            UpdateResult res = executor.execute(ctx.db());
 
             const long long numDocsModified = res.numDocsModified;
             const long long numMatched = res.numMatched;
@@ -1134,7 +1132,6 @@ namespace mongo {
             }
             result->setError(toWriteError(status));
         }
-        wunit.commit();
     }
 
     /**
@@ -1148,7 +1145,7 @@ namespace mongo {
                              WriteOpResult* result ) {
 
         const NamespaceString nss( removeItem.getRequest()->getNS() );
-        DeleteRequest request( nss );
+        DeleteRequest request(txn, nss);
         request.setQuery( removeItem.getDelete()->getQuery() );
         request.setMulti( removeItem.getDelete()->getLimit() != 1 );
         request.setUpdateOpLog(true);
@@ -1163,7 +1160,6 @@ namespace mongo {
         ///////////////////////////////////////////
         Lock::DBWrite writeLock(txn->lockState(), nss.ns());
         ///////////////////////////////////////////
-        WriteUnitOfWork wunit(txn->recoveryUnit());
 
         // Check version once we're locked
 
@@ -1174,10 +1170,10 @@ namespace mongo {
 
         // Context once we're locked, to set more details in currentOp()
         // TODO: better constructor?
-        Client::Context writeContext(txn, nss.ns(), false /* don't check version */);
+        Client::Context ctx(txn, nss.ns(), false /* don't check version */);
 
         try {
-            result->getStats().n = executor.execute(txn, writeContext.db());
+            result->getStats().n = executor.execute(ctx.db());
         }
         catch ( const DBException& ex ) {
             status = ex.toStatus();
@@ -1186,7 +1182,6 @@ namespace mongo {
             }
             result->setError(toWriteError(status));
         }
-        wunit.commit();
     }
 
 } // namespace mongo

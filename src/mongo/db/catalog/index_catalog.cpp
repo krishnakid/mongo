@@ -221,14 +221,14 @@ namespace mongo {
             return Status::OK(); // these checks have already been done
         }
 
-        auto_ptr<Runner> runner(
+        auto_ptr<PlanExecutor> exec(
             InternalPlanner::collectionScan(txn,
                                             db->_indexesName,
                                             db->getCollection(txn, db->_indexesName)));
 
         BSONObj index;
-        Runner::RunnerState state;
-        while ( Runner::RUNNER_ADVANCED == (state = runner->getNext(&index, NULL)) ) {
+        PlanExecutor::ExecState state;
+        while ( PlanExecutor::ADVANCED == (state = exec->getNext(&index, NULL)) ) {
             const BSONObj key = index.getObjectField("key");
             const string plugin = IndexNames::findPluginName(key);
             if ( IndexNames::existedBefore24(plugin) )
@@ -243,7 +243,7 @@ namespace mongo {
             return Status( ErrorCodes::CannotCreateIndex, errmsg );
         }
 
-        if ( Runner::RUNNER_EOF != state ) {
+        if ( PlanExecutor::IS_EOF != state ) {
             warning() << "Internal error while reading system.indexes collection";
         }
 
@@ -690,20 +690,7 @@ namespace mongo {
 
         // verify state is sane post cleaning
 
-        long long numSystemIndexesEntries = 0;
-        {
-            Collection* systemIndexes =
-                _collection->_database->getCollection( txn, _collection->_database->_indexesName );
-            if ( systemIndexes ) {
-                EqualityMatchExpression expr;
-                BSONObj nsBSON = BSON( "ns" << _collection->ns() );
-                invariant( expr.init( "ns", nsBSON.firstElement() ).isOK() );
-                numSystemIndexesEntries = systemIndexes->countTableScan( txn, &expr );
-            }
-            else {
-                // this is ok, 0 is the right number
-            }
-        }
+        long long numSystemIndexesEntries = _collection->getCatalogEntry()->getTotalIndexCount();
 
         if ( haveIdIndex ) {
             fassert( 17324, numIndexesTotal() == 1 );
@@ -1040,10 +1027,9 @@ namespace mongo {
 
             try {
                 Status s = _indexRecord( txn, entry, obj, loc );
-                uassert(s.location(), s.reason(), s.isOK() );
+                uassertStatusOK( s );
             }
             catch ( AssertionException& ae ) {
-
                 LOG(2) << "IndexCatalog::indexRecord failed: " << ae;
 
                 for ( IndexCatalogEntryContainer::const_iterator j = _entries.begin();

@@ -104,19 +104,19 @@ namespace mongo {
         return stageState;
     }
 
-    void TextStage::prepareToYield() {
+    void TextStage::saveState() {
         ++_commonStats.yields;
 
         for (size_t i = 0; i < _scanners.size(); ++i) {
-            _scanners.mutableVector()[i]->prepareToYield();
+            _scanners.mutableVector()[i]->saveState();
         }
     }
 
-    void TextStage::recoverFromYield() {
+    void TextStage::restoreState(OperationContext* opCtx) {
         ++_commonStats.unyields;
 
         for (size_t i = 0; i < _scanners.size(); ++i) {
-            _scanners.mutableVector()[i]->recoverFromYield();
+            _scanners.mutableVector()[i]->restoreState(opCtx);
         }
     }
 

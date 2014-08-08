@@ -68,8 +68,13 @@ namespace repl {
 
         /**
          * Initializes this MemberConfig from the contents of "mcfg".
+         *
+         * If "mcfg" describes any tags, builds ReplicaSetTags for this
+         * configuration using "tagConfig" as the tag's namespace. This may
+         * have the effect of altering "tagConfig" when "mcfg" describes a
+         * tag not previously added to "tagConfig".
          */
-        Status initialize(const BSONObj& mcfg);
+        Status initialize(const BSONObj& mcfg, ReplicaSetTagConfig* tagConfig);
 
         /**
          * Performs basic consistency checks on the member configuration.
@@ -105,6 +110,11 @@ namespace repl {
         bool isVoter() const { return _isVoter; }
 
         /**
+         * Returns the number of votes that this member gets.
+         */
+        int getNumVotes() const { return isVoter() ? 1 : 0; }
+
+        /**
          * Returns true if this member is an arbiter (is not data-bearing).
          */
         bool isArbiter() const { return _arbiterOnly; }
@@ -133,6 +143,16 @@ namespace repl {
          * Gets an end iterator over the tags for this member.
          */
         TagIterator tagsEnd() const { return _tags.end(); }
+
+        /**
+         * Returns true if this represents the configuration of an electable member.
+         */
+        bool isElectable() const { return !isArbiter() && getPriority() > 0; }
+
+        /**
+         * Returns the member config as a BSONObj, using "tagConfig" to generate the tag subdoc.
+         */
+        BSONObj toBSON(const ReplicaSetTagConfig& tagConfig) const;
 
     private:
 

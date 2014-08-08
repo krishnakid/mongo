@@ -27,7 +27,10 @@
 
 #pragma once
 
+#include <iosfwd>
 #include <string>
+
+#include "mongo/base/string_data.h"
 
 namespace mongo {
 namespace logger {
@@ -44,12 +47,12 @@ namespace logger {
             kAccessControl,
             kCommands,
             kIndexing,
-            kJournalling,
             kNetworking,
             kQuery,
             kReplication,
             kSharding,
             kStorage,
+            kJournaling,
             kWrites,
             kNumLogComponents
         };
@@ -59,14 +62,42 @@ namespace logger {
         operator Value() const { return _value; }
 
         /**
+         * Returns parent component.
+         * Returns kNumComponents if parent component is not defined (for kDefault or
+         * kNumLogComponents).
+         */
+        LogComponent parent() const;
+
+        /**
+         * Returns short name as a StringData.
+         */
+        StringData toStringData() const;
+
+        /**
          * Returns short name of log component.
          * Used to generate server parameter names in the format "logLevel_<component short name>".
          */
         std::string getShortName() const;
 
+        /**
+         * Returns dotted name of log component - short name prefixed by dot-separated names of
+         * ancestors.
+         * Used to generate command line and config file option names.
+         */
+        std::string getDottedName() const;
+
+        /**
+         * Returns name suitable for inclusion in formatted log message.
+         * This is derived from upper-casing the short name with some padding to
+         * fit into a fixed length field.
+         */
+        StringData getNameForLog() const;
+
     private:
         Value _value;
     };
+
+    std::ostream& operator<<(std::ostream& os, LogComponent component);
 
 }  // namespace logger
 }  // namespace mongo

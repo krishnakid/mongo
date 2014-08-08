@@ -35,6 +35,7 @@
 #include "mongo/client/connpool.h"
 #include "mongo/client/dbclientcursor.h"
 #include "mongo/db/query/lite_parsed_query.h"
+#include "mongo/db/lasterror.h"
 #include "mongo/db/write_concern.h"
 #include "mongo/platform/random.h"
 #include "mongo/s/chunk_diff.h"
@@ -56,6 +57,7 @@
 #include "mongo/db/query/query_planner.h"
 #include "mongo/db/query/query_planner_common.h"
 #include "mongo/db/query/index_bounds_builder.h"
+#include "mongo/db/write_concern_options.h"
 
 namespace mongo {
 
@@ -266,7 +268,7 @@ namespace mongo {
         }
     }
 
-    Status Chunk::split( bool atMedian, size_t* resultingSplits ) const {
+    Status Chunk::split(bool atMedian, size_t* resultingSplits, BSONObj* res) const {
         size_t dummy;
         if (resultingSplits == NULL) {
             resultingSplits = &dummy;
@@ -306,12 +308,12 @@ namespace mongo {
             return Status(ErrorCodes::CannotSplit, msg);
         }
 
-        Status status = multiSplit( splitPoints );
+        Status status = multiSplit(splitPoints, res);
         *resultingSplits = splitPoints.size();
         return status;
     }
 
-    Status Chunk::multiSplit( const vector<BSONObj>& m ) const {
+    Status Chunk::multiSplit(const vector<BSONObj>& m, BSONObj* res) const {
         const size_t maxSplitPoints = 8192;
 
         uassert( 10165 , "can't split as shard doesn't have a manager" , _manager );
@@ -332,10 +334,14 @@ namespace mongo {
         cmd.append( "configdb" , configServer.modelServer() );
         BSONObj cmdObj = cmd.obj();
 
-        BSONObj res;
-        if ( ! conn->runCommand( "admin" , cmdObj , res )) {
+        BSONObj dummy;
+        if (res == NULL) {
+            res = &dummy;
+        }
+
+        if (!conn->runCommand("admin", cmdObj, *res)) {
             string msg(str::stream() << "splitChunk failed - cmd: "
-                                     << cmdObj << " result: " << res);
+                                     << cmdObj << " result: " << *res);
             warning() << msg << endl;
             conn.done();
 
@@ -355,37 +361,50 @@ namespace mongo {
 
     bool Chunk::moveAndCommit(const Shard& to,
                               long long chunkSize /* bytes */,
-                              bool secondaryThrottle,
+                              const WriteConcernOptions* writeConcern,
                               bool waitForDelete,
                               int maxTimeMS,
-                              BSONObj& res) const
-    {
+                              BSONObj& res) const {
         uassert( 10167 ,  "can't move shard to its current location!" , getShard() != to );
 
-        log() << "moving chunk ns: " << _manager->getns() << " moving ( " << toString() << ") " << _shard.toString() << " -> " << to.toString() << endl;
+        log() << "moving chunk ns: " << _manager->getns() << " moving ( " << toString() << ") "
+              << _shard.toString() << " -> " << to.toString() << endl;
 
         Shard from = _shard;
-
         ScopedDbConnection fromconn(from.getConnString());
 
-        bool worked = fromconn->runCommand( "admin" ,
-                                            BSON( "moveChunk" << _manager->getns() <<
-                                                  "from" << from.getAddress().toString() <<
-                                                  "to" << to.getAddress().toString() <<
-                                                  // NEEDED FOR 2.0 COMPATIBILITY
-                                                  "fromShard" << from.getName() <<
-                                                  "toShard" << to.getName() <<
-                                                  ///////////////////////////////
-                                                  "min" << _min <<
-                                                  "max" << _max <<
-                                                  "maxChunkSizeBytes" << chunkSize <<
-                                                  "shardId" << genID() <<
-                                                  "configdb" << configServer.modelServer() <<
-                                                  "secondaryThrottle" << secondaryThrottle <<
-                                                  "waitForDelete" << waitForDelete <<
-                                                  LiteParsedQuery::cmdOptionMaxTimeMS << maxTimeMS
-                                                   ) ,
-                                            res);
+        BSONObjBuilder builder;
+        builder.append("moveChunk", _manager->getns());
+        builder.append("from", from.getAddress().toString());
+        builder.append("to", to.getAddress().toString());
+        // NEEDED FOR 2.0 COMPATIBILITY
+        builder.append("fromShard", from.getName());
+        builder.append("toShard", to.getName());
+        ///////////////////////////////
+        builder.append("min", _min);
+        builder.append("max", _max);
+        builder.append("maxChunkSizeBytes", chunkSize);
+        builder.append("shardId", genID());
+        builder.append("configdb", configServer.modelServer());
+
+        // For legacy secondary throttle setting.
+        bool secondaryThrottle = true;
+        if (writeConcern &&
+                writeConcern->wNumNodes <= 1 &&
+                writeConcern->wMode.empty()) {
+            secondaryThrottle = false;
+        }
+
+        builder.append("secondaryThrottle", secondaryThrottle);
+
+        if (secondaryThrottle && writeConcern) {
+            builder.append("writeConcern", writeConcern->toBSON());
+        }
+
+        builder.append("waitForDelete", waitForDelete);
+        builder.append(LiteParsedQuery::cmdOptionMaxTimeMS, maxTimeMS);
+
+        bool worked = fromconn->runCommand("admin", builder.done(), res);
         fromconn.done();
 
         LOG( worked ? 1 : 0 ) << "moveChunk result: " << res << endl;
@@ -435,8 +454,9 @@ namespace mongo {
 
             BSONObj res;
             size_t splitCount = 0;
-            Status status = split( false /* does not force a split if not enough data */,
-                                   &splitCount );
+            Status status = split(false /* does not force a split if not enough data */,
+                                  &splitCount,
+                                  &res);
             if ( !status.isOK() ) {
                 // split would have issued a message if we got here
                 _dataWritten = 0; // this means there wasn't enough data to split, so don't want to try again until considerable more data
@@ -450,7 +470,8 @@ namespace mongo {
                 _dataWritten = 0; // we're splitting, so should wait a bit
             }
 
-            bool shouldBalance = grid.shouldBalance( _manager->getns() );
+            const bool shouldBalance = grid.getConfigShouldBalance() &&
+                    grid.getCollShouldBalance(_manager->getns());
 
             log() << "autosplitted " << _manager->getns()
                   << " shard: " << toString()
@@ -489,11 +510,13 @@ namespace mongo {
                 log().stream() << "moving chunk (auto): " << toMove << " to: " << newLocation.toString() << endl;
 
                 BSONObj res;
+
+                WriteConcernOptions noThrottle;
                 massert( 10412 ,
                          str::stream() << "moveAndCommit failed: " << res ,
                          toMove->moveAndCommit( newLocation , 
                                                 MaxChunkSize , 
-                                                false , /* secondaryThrottle - small chunk, no need */
+                                                &noThrottle, /* secondaryThrottle */
                                                 false, /* waitForDelete - small chunk, no need */
                                                 0, /* maxTimeMS - don't time out */
                                                 res ) );
@@ -651,7 +674,7 @@ namespace mongo {
 
     // -------  ChunkManager --------
 
-    AtomicUInt ChunkManager::NextSequenceNumber = 1;
+    AtomicUInt32 ChunkManager::NextSequenceNumber(1U);
 
     ChunkManager::ChunkManager( const string& ns, const ShardKeyPattern& pattern , bool unique ) :
         _ns( ns ),
@@ -659,7 +682,7 @@ namespace mongo {
         _unique( unique ),
         _chunkRanges(),
         _mutex("ChunkManager"),
-        _sequenceNumber(++NextSequenceNumber)
+        _sequenceNumber(NextSequenceNumber.addAndFetch(1))
     {
         //
         // Sets up a chunk manager from new data
@@ -681,7 +704,7 @@ namespace mongo {
         // The shard versioning mechanism hinges on keeping track of the number of times we reloaded ChunkManager's.
         // Increasing this number here will prompt checkShardVersion() to refresh the connection-level versions to
         // the most up to date value.
-        _sequenceNumber(++NextSequenceNumber)
+        _sequenceNumber(NextSequenceNumber.addAndFetch(1))
     {
 
         //
@@ -700,7 +723,7 @@ namespace mongo {
         _unique( oldManager->isUnique() ),
         _chunkRanges(),
         _mutex("ChunkManager"),
-        _sequenceNumber(++NextSequenceNumber)
+        _sequenceNumber(NextSequenceNumber.addAndFetch(1))
     {
         //
         // Sets up a chunk manager based on an older manager

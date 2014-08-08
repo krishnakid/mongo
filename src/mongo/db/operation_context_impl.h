@@ -50,6 +50,8 @@ namespace mongo {
                                           unsigned long long progressMeterTotal,
                                           int secondsBetween);
 
+        virtual bool isGod() const;
+
         virtual string getNS() const;
 
         virtual Client* getClient() const;
@@ -67,6 +69,7 @@ namespace mongo {
     private:
         boost::scoped_ptr<RecoveryUnit> _recovery;
         Transaction _tx;
+        LockState _lockState;
     };
 
 }  // namespace mongo

@@ -81,7 +81,7 @@ namespace mongo {
             const RoleName& role = *it;
             rolesArrayBuilder.append(
                     BSON(AuthorizationManager::ROLE_NAME_FIELD_NAME << role.getRole() <<
-                         AuthorizationManager::ROLE_SOURCE_FIELD_NAME << role.getDB()));
+                         AuthorizationManager::ROLE_DB_FIELD_NAME << role.getDB()));
         }
         return rolesArrayBuilder.arr();
     }
@@ -92,7 +92,7 @@ namespace mongo {
             const RoleName& role = *it;
             rolesArrayBuilder.append(
                     BSON(AuthorizationManager::ROLE_NAME_FIELD_NAME << role.getRole() <<
-                         AuthorizationManager::ROLE_SOURCE_FIELD_NAME << role.getDB()));
+                         AuthorizationManager::ROLE_DB_FIELD_NAME << role.getDB()));
         }
         return rolesArrayBuilder.arr();
     }
@@ -1155,7 +1155,8 @@ namespace mongo {
                         appendBSONObjToBSONArrayBuilder,
                         &usersArrayBuilder,
                         stdx::placeholders::_1);
-                authzManager->queryAuthzDocument(usersNamespace,
+                authzManager->queryAuthzDocument(txn,
+                                                 usersNamespace,
                                                  queryBuilder.done(),
                                                  projection.done(),
                                                  function);
@@ -1264,7 +1265,7 @@ namespace mongo {
                                           args.roleName.getRole());
             roleObjBuilder.append(AuthorizationManager::ROLE_NAME_FIELD_NAME,
                                   args.roleName.getRole());
-            roleObjBuilder.append(AuthorizationManager::ROLE_SOURCE_FIELD_NAME,
+            roleObjBuilder.append(AuthorizationManager::ROLE_DB_FIELD_NAME,
                                   args.roleName.getDB());
 
             BSONArray privileges;
@@ -2038,12 +2039,12 @@ namespace mongo {
                     BSON("roles" << BSON("$elemMatch" <<
                                          BSON(AuthorizationManager::ROLE_NAME_FIELD_NAME <<
                                               roleName.getRole() <<
-                                              AuthorizationManager::ROLE_SOURCE_FIELD_NAME <<
+                                              AuthorizationManager::ROLE_DB_FIELD_NAME <<
                                               roleName.getDB()))),
                     BSON("$pull" << BSON("roles" <<
                                          BSON(AuthorizationManager::ROLE_NAME_FIELD_NAME <<
                                               roleName.getRole() <<
-                                              AuthorizationManager::ROLE_SOURCE_FIELD_NAME <<
+                                              AuthorizationManager::ROLE_DB_FIELD_NAME <<
                                               roleName.getDB()))),
                     false,
                     true,
@@ -2067,12 +2068,12 @@ namespace mongo {
                     BSON("roles" << BSON("$elemMatch" <<
                                          BSON(AuthorizationManager::ROLE_NAME_FIELD_NAME <<
                                               roleName.getRole() <<
-                                              AuthorizationManager::ROLE_SOURCE_FIELD_NAME <<
+                                              AuthorizationManager::ROLE_DB_FIELD_NAME <<
                                               roleName.getDB()))),
                     BSON("$pull" << BSON("roles" <<
                                          BSON(AuthorizationManager::ROLE_NAME_FIELD_NAME <<
                                               roleName.getRole() <<
-                                              AuthorizationManager::ROLE_SOURCE_FIELD_NAME <<
+                                              AuthorizationManager::ROLE_DB_FIELD_NAME <<
                                               roleName.getDB()))),
                     false,
                     true,
@@ -2096,7 +2097,7 @@ namespace mongo {
             // Finally, remove the actual role document
             status = authzManager->removeRoleDocuments(
                     BSON(AuthorizationManager::ROLE_NAME_FIELD_NAME << roleName.getRole() <<
-                         AuthorizationManager::ROLE_SOURCE_FIELD_NAME << roleName.getDB()),
+                         AuthorizationManager::ROLE_DB_FIELD_NAME << roleName.getDB()),
                     writeConcern,
                     &nMatched);
             // Must invalidate even on bad status - what if the write succeeded but the GLE failed?
@@ -2187,9 +2188,9 @@ namespace mongo {
             int nMatched;
             status = authzManager->updateAuthzDocuments(
                     AuthorizationManager::usersCollectionNamespace,
-                    BSON("roles" << BSON(AuthorizationManager::ROLE_SOURCE_FIELD_NAME << dbname)),
+                    BSON("roles" << BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << dbname)),
                     BSON("$pull" << BSON("roles" <<
-                                         BSON(AuthorizationManager::ROLE_SOURCE_FIELD_NAME <<
+                                         BSON(AuthorizationManager::ROLE_DB_FIELD_NAME <<
                                               dbname))),
                     false,
                     true,
@@ -2209,12 +2210,12 @@ namespace mongo {
 
             // Remove these roles from all other roles
             std::string sourceFieldName =
-                    str::stream() << "roles." << AuthorizationManager::ROLE_SOURCE_FIELD_NAME;
+                    str::stream() << "roles." << AuthorizationManager::ROLE_DB_FIELD_NAME;
             status = authzManager->updateAuthzDocuments(
                     AuthorizationManager::rolesCollectionNamespace,
                     BSON(sourceFieldName << dbname),
                     BSON("$pull" << BSON("roles" <<
-                                         BSON(AuthorizationManager::ROLE_SOURCE_FIELD_NAME <<
+                                         BSON(AuthorizationManager::ROLE_DB_FIELD_NAME <<
                                               dbname))),
                     false,
                     true,
@@ -2235,7 +2236,7 @@ namespace mongo {
             audit::logDropAllRolesFromDatabase(ClientBasic::getCurrent(), dbname);
             // Finally, remove the actual role documents
             status = authzManager->removeRoleDocuments(
-                    BSON(AuthorizationManager::ROLE_SOURCE_FIELD_NAME << dbname),
+                    BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << dbname),
                     writeConcern,
                     &nMatched);
             // Must invalidate even on bad status - what if the write succeeded but the GLE failed?
@@ -2559,7 +2560,7 @@ namespace mongo {
                                                    &name);
             uassertStatusOK(status);
             status = bsonExtractStringField(roleObj,
-                                            AuthorizationManager::ROLE_SOURCE_FIELD_NAME,
+                                            AuthorizationManager::ROLE_DB_FIELD_NAME,
                                             &db);
             uassertStatusOK(status);
             return RoleName(name, db);
@@ -2629,15 +2630,20 @@ namespace mongo {
         /**
          * Designed to be used with stdx::bind to be called on every user object in the result
          * set of a query over the tempUsersCollection provided to the command.  For each user
-         * in the temp collection, adds that user to the actual admin.system.users collection.
+         * in the temp collection that is defined on the given db, adds that user to the actual
+         * admin.system.users collection.
          * Also removes any users it encounters from the usersToDrop set.
          */
         static void addUser(AuthorizationManager* authzManager,
+                            const StringData& db,
                             bool update,
                             const BSONObj& writeConcern,
                             unordered_set<UserName>* usersToDrop,
                             const BSONObj& userObj) {
             UserName userName = extractUserNameFromBSON(userObj);
+            if (!db.empty() && userName.getDB() != db) {
+                return;
+            }
 
             if (update && usersToDrop->count(userName)) {
                 auditCreateOrUpdateUser(userObj, false);
@@ -2666,15 +2672,20 @@ namespace mongo {
         /**
          * Designed to be used with stdx::bind to be called on every role object in the result
          * set of a query over the tempRolesCollection provided to the command.  For each role
-         * in the temp collection, adds that role to the actual admin.system.roles collection.
+         * in the temp collection that is defined on the given db, adds that role to the actual
+         * admin.system.roles collection.
          * Also removes any roles it encounters from the rolesToDrop set.
          */
         static void addRole(AuthorizationManager* authzManager,
+                            const StringData& db,
                             bool update,
                             const BSONObj& writeConcern,
                             unordered_set<RoleName>* rolesToDrop,
                             const BSONObj roleObj) {
             RoleName roleName = extractRoleNameFromBSON(roleObj);
+            if (!db.empty() && roleName.getDB() != db) {
+                return;
+            }
 
             if (update && rolesToDrop->count(roleName)) {
                 auditCreateOrUpdateRole(roleObj, false);
@@ -2702,8 +2713,10 @@ namespace mongo {
          * Moves all user objects from usersCollName into admin.system.users.  If drop is true,
          * removes any users that were in admin.system.users but not in usersCollName.
          */
-        Status processUsers(AuthorizationManager* authzManager,
+        Status processUsers(OperationContext* txn,
+                            AuthorizationManager* authzManager,
                             const StringData& usersCollName,
+                            const StringData& db,
                             bool drop,
                             const BSONObj& writeConcern) {
             // When the "drop" argument has been provided, we use this set to store the users
@@ -2719,12 +2732,15 @@ namespace mongo {
 
             if (drop) {
                 // Create map of the users currently in the DB
+                BSONObj query = db.empty() ?
+                        BSONObj() : BSON(AuthorizationManager::USER_DB_FIELD_NAME << db);
                 BSONObj fields = BSON(AuthorizationManager::USER_NAME_FIELD_NAME << 1 <<
                                       AuthorizationManager::USER_DB_FIELD_NAME << 1);
 
                 Status status = authzManager->queryAuthzDocument(
+                        txn,
                         AuthorizationManager::usersCollectionNamespace,
-                        BSONObj(),
+                        query,
                         fields,
                         stdx::bind(&CmdMergeAuthzCollections::extractAndInsertUserName,
                                     &usersToDrop,
@@ -2735,11 +2751,13 @@ namespace mongo {
             }
 
             Status status = authzManager->queryAuthzDocument(
+                    txn,
                     NamespaceString(usersCollName),
-                    BSONObj(),
+                    db.empty() ? BSONObj() : BSON(AuthorizationManager::USER_DB_FIELD_NAME << db),
                     BSONObj(),
                     stdx::bind(&CmdMergeAuthzCollections::addUser,
                                 authzManager,
+                                db,
                                 drop,
                                 writeConcern,
                                 &usersToDrop,
@@ -2776,8 +2794,10 @@ namespace mongo {
          * Moves all user objects from usersCollName into admin.system.users.  If drop is true,
          * removes any users that were in admin.system.users but not in usersCollName.
          */
-        Status processRoles(AuthorizationManager* authzManager,
+        Status processRoles(OperationContext* txn,
+                            AuthorizationManager* authzManager,
                             const StringData& rolesCollName,
+                            const StringData& db,
                             bool drop,
                             const BSONObj& writeConcern) {
             // When the "drop" argument has been provided, we use this set to store the roles
@@ -2792,12 +2812,15 @@ namespace mongo {
 
             if (drop) {
                 // Create map of the roles currently in the DB
+                BSONObj query = db.empty() ?
+                        BSONObj() : BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << db);
                 BSONObj fields = BSON(AuthorizationManager::ROLE_NAME_FIELD_NAME << 1 <<
-                                      AuthorizationManager::ROLE_SOURCE_FIELD_NAME << 1);
+                                      AuthorizationManager::ROLE_DB_FIELD_NAME << 1);
 
                 Status status = authzManager->queryAuthzDocument(
+                        txn,
                         AuthorizationManager::rolesCollectionNamespace,
-                        BSONObj(),
+                        query,
                         fields,
                         stdx::bind(&CmdMergeAuthzCollections::extractAndInsertRoleName,
                                     &rolesToDrop,
@@ -2808,11 +2831,14 @@ namespace mongo {
             }
 
             Status status = authzManager->queryAuthzDocument(
+                    txn,
                     NamespaceString(rolesCollName),
-                    BSONObj(),
+                    db.empty() ?
+                            BSONObj() : BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << db),
                     BSONObj(),
                     stdx::bind(&CmdMergeAuthzCollections::addRole,
                                 authzManager,
+                                db,
                                 drop,
                                 writeConcern,
                                 &rolesToDrop,
@@ -2830,7 +2856,7 @@ namespace mongo {
                     status = authzManager->removeRoleDocuments(
                             BSON(AuthorizationManager::ROLE_NAME_FIELD_NAME <<
                                  roleName.getRole().toString() <<
-                                 AuthorizationManager::ROLE_SOURCE_FIELD_NAME <<
+                                 AuthorizationManager::ROLE_DB_FIELD_NAME <<
                                  roleName.getDB().toString()
                                  ),
                             writeConcern,
@@ -2879,8 +2905,10 @@ namespace mongo {
             }
 
             if (!args.usersCollName.empty()) {
-                Status status = processUsers(authzManager,
+                Status status = processUsers(txn,
+                                             authzManager,
                                              args.usersCollName,
+                                             args.db,
                                              args.drop,
                                              args.writeConcern);
                 if (!status.isOK()) {
@@ -2889,8 +2917,10 @@ namespace mongo {
             }
 
             if (!args.rolesCollName.empty()) {
-                Status status = processRoles(authzManager,
+                Status status = processRoles(txn,
+                                             authzManager,
                                              args.rolesCollName,
+                                             args.db,
                                              args.drop,
                                              args.writeConcern);
                 if (!status.isOK()) {

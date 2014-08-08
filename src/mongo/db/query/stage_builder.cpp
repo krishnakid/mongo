@@ -114,7 +114,7 @@ namespace mongo {
             PlanStage* childStage = buildStages(txn, collection, qsol, pn->children[0], ws);
             if (NULL == childStage) { return NULL; }
 
-            ProjectionStageParams params(WhereCallbackReal(collection->ns().db()));
+            ProjectionStageParams params(WhereCallbackReal(txn, collection->ns().db()));
             params.projObj = pn->projection;
 
             // Stuff the right data into the params depending on what proj impl we use.
@@ -208,11 +208,7 @@ namespace mongo {
                 return NULL;
             }
 
-            int numToReturn = node->numToReturn;
-            params.fullFilter = node->fullFilterExcludingNear.get();
-
             GeoNear2DStage* nearStage = new GeoNear2DStage(params, txn, ws, collection, twoDIndex);
-            nearStage->setLimit(numToReturn);
 
             return nearStage;
         }

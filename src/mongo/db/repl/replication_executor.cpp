@@ -42,10 +42,14 @@ namespace {
     stdx::function<void ()> makeNoExcept(const stdx::function<void ()> &fn);
 }  // namespace
 
+    const ReplicationExecutor::Milliseconds ReplicationExecutor::kNoTimeout(-1);
+    const Date_t ReplicationExecutor::kNoExpirationDate(-1);
+
     ReplicationExecutor::ReplicationExecutor(NetworkInterface* netInterface) :
         _networkInterface(netInterface),
         _totalEventWaiters(0),
-        _inShutdown(false) {
+        _inShutdown(false),
+        _nextId(0) {
     }
 
     ReplicationExecutor::~ReplicationExecutor() {}
@@ -104,7 +108,7 @@ namespace {
         while (!_unsignaledEvents.empty()) {
             EventList::iterator event = _unsignaledEvents.begin();
             invariant(event->waiters.empty());
-            signalEvent_inlock(EventHandle(event));
+            signalEvent_inlock(EventHandle(event, ++_nextId));
         }
 
         while (_totalEventWaiters > 0)
@@ -137,7 +141,7 @@ namespace {
         iter->generation++;
         iter->isSignaled = false;
         _unsignaledEvents.splice(_unsignaledEvents.end(), _signaledEvents, iter);
-        return StatusWith<EventHandle>(EventHandle(iter));
+        return StatusWith<EventHandle>(EventHandle(iter, ++_nextId));
     }
 
     void ReplicationExecutor::signalEvent(const EventHandle& event) {
@@ -247,6 +251,8 @@ namespace {
         StatusWith<BSONObj> cmdResult = _networkInterface->runCommand(request);
 
         lk.lock();
+        if (_inShutdown)
+            return;
         if (generation != iter->generation)
             return;
         iter->callback = stdx::bind(remoteCommandFinished,
@@ -369,7 +375,12 @@ namespace {
             else if (_inShutdown) {
                 return std::make_pair(WorkItem(), CallbackHandle());
             }
-            _workAvailable.timed_wait(lk, waitFor);
+            if (waitFor.total_milliseconds() < 0) {
+                _workAvailable.wait(lk);
+            }
+            else {
+                _workAvailable.timed_wait(lk, waitFor);
+            }
         }
         const CallbackHandle cbHandle(_readyQueue.begin());
         const WorkItem work = *cbHandle._iter;
@@ -387,8 +398,8 @@ namespace {
         _readyQueue.splice(_readyQueue.end(), _sleepersQueue, _sleepersQueue.begin(), iter);
         _workAvailable.notify_all();
         if (iter == _sleepersQueue.end()) {
-            //return milliseconds::max();
-            return Milliseconds(std::numeric_limits<boost::int64_t>::max());
+            // indicate no sleeper to wait for
+            return Milliseconds(-1);
         }
         return Milliseconds(iter->readyDate - now);
     }
@@ -413,9 +424,10 @@ namespace {
         return StatusWith<CallbackHandle>(CallbackHandle(iter));
     }
 
-    ReplicationExecutor::EventHandle::EventHandle(const EventList::iterator& iter) :
+    ReplicationExecutor::EventHandle::EventHandle(const EventList::iterator& iter, uint64_t id) :
         _iter(iter),
-        _generation(iter->generation) {
+        _generation(iter->generation),
+        _id(id) {
     }
 
     ReplicationExecutor::CallbackHandle::CallbackHandle(const WorkQueue::iterator& iter) :
@@ -436,10 +448,14 @@ namespace {
     ReplicationExecutor::RemoteCommandRequest::RemoteCommandRequest(
             const HostAndPort& theTarget,
             const std::string& theDbName,
-            const BSONObj& theCmdObj) :
+            const BSONObj& theCmdObj,
+            const Milliseconds timeoutMillis) :
         target(theTarget),
         dbname(theDbName),
         cmdObj(theCmdObj) {
+        expirationDate = timeoutMillis == kNoTimeout ? kNoExpirationDate :
+                                                       Date_t(curTimeMillis64() +
+                                                              timeoutMillis.total_milliseconds());
     }
 
     ReplicationExecutor::RemoteCommandCallbackData::RemoteCommandCallbackData(

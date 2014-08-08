@@ -36,12 +36,12 @@ namespace repl {
 
     class ReplSet : public ReplSetImpl {
     public:
-        static ReplSet* make(ReplSetSeedList& replSetSeedList);
+        static ReplSet* make(OperationContext* txn, ReplSetSeedList& replSetSeedList);
         virtual ~ReplSet() {}
 
         // for the replSetStepDown command
         // Returns false if this node isn't currently primary
-        bool stepDown(int secs) { return _stepDown(secs); }
+        bool stepDown(OperationContext* txn, int secs) { return _stepDown(txn, secs); }
 
         // for the replSetFreeze command
         bool freeze(int secs) { return _freeze(secs); }
@@ -78,7 +78,7 @@ namespace repl {
          * The slaves are updated when they get a heartbeat indicating the new
          * config.  The comment is a no-op.
          */
-        void haveNewConfig(ReplSetConfig& c, bool comment);
+        void haveNewConfig(OperationContext* txn, ReplSetConfig& c, bool comment);
 
         /**
          * Pointer assignment isn't necessarily atomic, so this needs to assure

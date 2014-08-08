@@ -217,6 +217,10 @@ namespace mongo {
         case STAGE_SUBPLAN:
         case STAGE_TEXT:
         case STAGE_UNKNOWN:
+        case STAGE_DELETE:
+        case STAGE_NOTIFY_DELETE:
+        case STAGE_MULTI_ITERATOR:
+        case STAGE_PIPELINE_PROXY:
             break;
         };
 

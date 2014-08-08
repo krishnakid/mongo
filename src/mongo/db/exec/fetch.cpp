@@ -111,14 +111,14 @@ namespace mongo {
         }
     }
 
-    void FetchStage::prepareToYield() {
+    void FetchStage::saveState() {
         ++_commonStats.yields;
-        _child->prepareToYield();
+        _child->saveState();
     }
 
-    void FetchStage::recoverFromYield() {
+    void FetchStage::restoreState(OperationContext* opCtx) {
         ++_commonStats.unyields;
-        _child->recoverFromYield();
+        _child->restoreState(opCtx);
     }
 
     void FetchStage::invalidate(const DiskLoc& dl, InvalidationType type) {

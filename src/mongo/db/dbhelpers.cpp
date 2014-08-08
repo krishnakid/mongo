@@ -46,12 +46,13 @@
 #include "mongo/db/ops/update_lifecycle_impl.h"
 #include "mongo/db/ops/update_request.h"
 #include "mongo/db/ops/update_result.h"
-#include "mongo/db/query/get_runner.h"
+#include "mongo/db/query/get_executor.h"
 #include "mongo/db/query/internal_plans.h"
 #include "mongo/db/query/query_planner.h"
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/repl_coordinator_global.h"
 #include "mongo/db/write_concern.h"
+#include "mongo/db/write_concern_options.h"
 #include "mongo/db/operation_context_impl.h"
 #include "mongo/db/storage_options.h"
 #include "mongo/db/catalog/collection.h"
@@ -106,20 +107,20 @@ namespace mongo {
             return DiskLoc();
 
         CanonicalQuery* cq;
-        const WhereCallbackReal whereCallback(collection->ns().db());
+        const WhereCallbackReal whereCallback(txn, collection->ns().db());
 
         massert(17244, "Could not canonicalize " + query.toString(),
             CanonicalQuery::canonicalize(collection->ns(), query, &cq, whereCallback).isOK());
 
-        Runner* rawRunner;
+        PlanExecutor* rawExec;
         size_t options = requireIndex ? QueryPlannerParams::NO_TABLE_SCAN : QueryPlannerParams::DEFAULT;
-        massert(17245, "Could not get runner for query " + query.toString(),
-                getRunner(txn, collection, cq, &rawRunner, options).isOK());
+        massert(17245, "Could not get executor for query " + query.toString(),
+                getExecutor(txn, collection, cq, &rawExec, options).isOK());
 
-        auto_ptr<Runner> runner(rawRunner);
-        Runner::RunnerState state;
+        auto_ptr<PlanExecutor> exec(rawExec);
+        PlanExecutor::ExecState state;
         DiskLoc loc;
-        if (Runner::RUNNER_ADVANCED == (state = runner->getNext(NULL, &loc))) {
+        if (PlanExecutor::ADVANCED == (state = exec->getNext(NULL, &loc))) {
             return loc;
         }
         return DiskLoc();
@@ -177,30 +178,29 @@ namespace mongo {
     }
 
     /* Get the first object from a collection.  Generally only useful if the collection
-       only ever has a single object -- which is a "singleton collection.
+       only ever has a single object -- which is a "singleton collection". Note that the
+       BSONObj returned is *not* owned and will become invalid if the database is closed.
 
        Returns: true if object exists.
     */
     bool Helpers::getSingleton(OperationContext* txn, const char *ns, BSONObj& result) {
         Client::Context context(txn, ns);
-        auto_ptr<Runner> runner(InternalPlanner::collectionScan(txn,
-                                                                ns,
-                                                                context.db()->getCollection(txn,
-                                                                                            ns)));
-        Runner::RunnerState state = runner->getNext(&result, NULL);
+        auto_ptr<PlanExecutor> exec(
+            InternalPlanner::collectionScan(txn, ns, context.db()->getCollection(txn, ns)));
+
+        PlanExecutor::ExecState state = exec->getNext(&result, NULL);
         context.getClient()->curop()->done();
-        return Runner::RUNNER_ADVANCED == state;
+        return PlanExecutor::ADVANCED == state;
     }
 
     bool Helpers::getLast(OperationContext* txn, const char *ns, BSONObj& result) {
         Client::Context ctx(txn, ns);
         Collection* coll = ctx.db()->getCollection( txn, ns );
-        auto_ptr<Runner> runner(InternalPlanner::collectionScan(txn,
-                                                                ns,
-                                                                coll,
-                                                                InternalPlanner::BACKWARD));
-        Runner::RunnerState state = runner->getNext(&result, NULL);
-        return Runner::RUNNER_ADVANCED == state;
+        auto_ptr<PlanExecutor> exec(
+            InternalPlanner::collectionScan(txn, ns, coll, InternalPlanner::BACKWARD));
+
+        PlanExecutor::ExecState state = exec->getNext(&result, NULL);
+        return PlanExecutor::ADVANCED == state;
     }
 
     void Helpers::upsert( OperationContext* txn,
@@ -215,7 +215,7 @@ namespace mongo {
         Client::Context context(txn, ns);
 
         const NamespaceString requestNs(ns);
-        UpdateRequest request(requestNs);
+        UpdateRequest request(txn, requestNs);
 
         request.setQuery(id);
         request.setUpdates(o);
@@ -225,7 +225,7 @@ namespace mongo {
         UpdateLifecycleImpl updateLifecycle(true, requestNs);
         request.setLifecycle(&updateLifecycle);
 
-        update(txn, context.db(), request, &debug);
+        update(context.db(), request, &debug);
     }
 
     void Helpers::putSingleton(OperationContext* txn, const char *ns, BSONObj obj) {
@@ -233,7 +233,7 @@ namespace mongo {
         Client::Context context(txn, ns);
 
         const NamespaceString requestNs(ns);
-        UpdateRequest request(requestNs);
+        UpdateRequest request(txn, requestNs);
 
         request.setUpdates(obj);
         request.setUpsert();
@@ -241,7 +241,7 @@ namespace mongo {
         UpdateLifecycleImpl updateLifecycle(true, requestNs);
         request.setLifecycle(&updateLifecycle);
 
-        update(txn, context.db(), request, &debug);
+        update(context.db(), request, &debug);
 
         context.getClient()->curop()->done();
     }
@@ -251,14 +251,14 @@ namespace mongo {
         Client::Context context(txn, ns);
 
         const NamespaceString requestNs(ns);
-        UpdateRequest request(requestNs);
+        UpdateRequest request(txn, requestNs);
 
         request.setGod();
         request.setUpdates(obj);
         request.setUpsert();
         request.setUpdateOpLog(logTheOp);
 
-        update(txn, context.db(), request, &debug);
+        update(context.db(), request, &debug);
 
         context.getClient()->curop()->done();
     }
@@ -305,7 +305,7 @@ namespace mongo {
     long long Helpers::removeRange( OperationContext* txn,
                                     const KeyRange& range,
                                     bool maxInclusive,
-                                    bool secondaryThrottle,
+                                    const WriteConcernOptions& writeConcern,
                                     RemoveSaver* callback,
                                     bool fromMigrate,
                                     bool onlyRemoveOrphanedDocs )
@@ -342,7 +342,7 @@ namespace mongo {
                 Helpers::toKeyFormat( indexKeyPattern.extendRangeBound(range.maxKey,maxInclusive));
 
         LOG(1) << "begin removal of " << min << " to " << max << " in " << ns
-               << (secondaryThrottle ? " (waiting for secondaries)" : "" ) << endl;
+               << " with write concern: " << writeConcern.toBSON() << endl;
 
         Client& c = cc();
 
@@ -361,27 +361,28 @@ namespace mongo {
                 IndexDescriptor* desc =
                     collection->getIndexCatalog()->findIndexByKeyPattern( indexKeyPattern.toBSON() );
 
-                auto_ptr<Runner> runner(InternalPlanner::indexScan(txn, collection, desc, min, max,
-                                                                   maxInclusive,
-                                                                   InternalPlanner::FORWARD,
-                                                                   InternalPlanner::IXSCAN_FETCH));
+                auto_ptr<PlanExecutor> exec(InternalPlanner::indexScan(txn, collection, desc,
+                                                                       min, max,
+                                                                       maxInclusive,
+                                                                       InternalPlanner::FORWARD,
+                                                                       InternalPlanner::IXSCAN_FETCH));
 
                 DiskLoc rloc;
                 BSONObj obj;
-                Runner::RunnerState state;
+                PlanExecutor::ExecState state;
                 // This may yield so we cannot touch nsd after this.
-                state = runner->getNext(&obj, &rloc);
-                runner.reset();
-                if (Runner::RUNNER_EOF == state) { break; }
+                state = exec->getNext(&obj, &rloc);
+                exec.reset();
+                if (PlanExecutor::IS_EOF == state) { break; }
 
-                if (Runner::RUNNER_DEAD == state) {
+                if (PlanExecutor::DEAD == state) {
                     warning() << "cursor died: aborting deletion for "
                               << min << " to " << max << " in " << ns
                               << endl;
                     break;
                 }
 
-                if (Runner::RUNNER_ERROR == state) {
+                if (PlanExecutor::EXEC_ERROR == state) {
                     warning() << "cursor error while trying to delete "
                               << min << " to " << max
                               << " in " << ns << ": "
@@ -389,7 +390,7 @@ namespace mongo {
                     break;
                 }
 
-                verify(Runner::RUNNER_ADVANCED == state);
+                verify(PlanExecutor::ADVANCED == state);
 
                 if ( onlyRemoveOrphanedDocs ) {
                     // Do a final check in the write lock to make absolutely sure that our
@@ -435,10 +436,7 @@ namespace mongo {
             // TODO remove once the yielding below that references this timer has been removed
             Timer secondaryThrottleTime;
 
-            if ( secondaryThrottle && numDeleted > 0 ) {
-                WriteConcernOptions writeConcern;
-                writeConcern.wNumNodes = 2;
-                writeConcern.wTimeout = 60 * 1000;
+            if (writeConcern.shouldWaitForOtherNodes() && numDeleted > 0) {
                 repl::ReplicationCoordinator::StatusAndDuration replStatus =
                         repl::getGlobalReplicationCoordinator()->awaitReplication(txn,
                                                                                   c.getLastOp(),
@@ -454,7 +452,7 @@ namespace mongo {
             }
         }
         
-        if ( secondaryThrottle )
+        if (writeConcern.shouldWaitForOtherNodes())
             log() << "Helpers::removeRangeUnlocked time spent waiting for replication: "  
                   << millisWaitingForReplication << "ms" << endl;
         
@@ -522,13 +520,14 @@ namespace mongo {
         bool isLargeChunk = false;
         long long docCount = 0;
 
-        auto_ptr<Runner> runner(InternalPlanner::indexScan(txn, collection, idx, min, max, false));
+        auto_ptr<PlanExecutor> exec(
+            InternalPlanner::indexScan(txn, collection, idx, min, max, false));
         // we can afford to yield here because any change to the base data that we might miss  is
         // already being queued and will be migrated in the 'transferMods' stage
 
         DiskLoc loc;
-        Runner::RunnerState state;
-        while (Runner::RUNNER_ADVANCED == (state = runner->getNext(NULL, &loc))) {
+        PlanExecutor::ExecState state;
+        while (PlanExecutor::ADVANCED == (state = exec->getNext(NULL, &loc))) {
             if ( !isLargeChunk ) {
                 locs->insert( loc );
             }

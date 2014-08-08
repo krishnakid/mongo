@@ -33,6 +33,7 @@
 #include <boost/thread/thread.hpp>
 #include <boost/filesystem/operations.hpp>
 #include <fstream>
+#include <limits>
 
 #include "mongo/base/init.h"
 #include "mongo/base/initializer.h"
@@ -70,8 +71,8 @@
 #include "mongo/db/repair_database.h"
 #include "mongo/db/repl/network_interface_impl.h"
 #include "mongo/db/repl/repl_coordinator_global.h"
+#include "mongo/db/repl/repl_coordinator_hybrid.h"
 #include "mongo/db/repl/repl_coordinator_impl.h"
-#include "mongo/db/repl/repl_coordinator_legacy.h"
 #include "mongo/db/repl/repl_settings.h"
 #include "mongo/db/repl/rs.h"
 #include "mongo/db/repl/topology_coordinator_impl.h"
@@ -103,6 +104,7 @@
 #include "mongo/util/stacktrace.h"
 #include "mongo/util/startup_test.h"
 #include "mongo/util/text.h"
+#include "mongo/util/time_support.h"
 #include "mongo/util/version_reporting.h"
 
 #if !defined(_WIN32)
@@ -263,8 +265,8 @@ namespace mongo {
         c.insert( name, o);
     }
 
+    // Starts the listener port and never returns unless an error occurs
     static void listen(int port) {
-        //testTheDb();
         MessageServer::Options options;
         options.port = port;
         options.ipList = serverGlobalParams.bind_ip;
@@ -277,7 +279,8 @@ namespace mongo {
 
         logStartup();
         repl::getGlobalReplicationCoordinator()->startReplication(
-                new repl::TopologyCoordinatorImpl(), new repl::NetworkInterfaceImpl());
+            new repl::TopologyCoordinatorImpl(Seconds(repl::maxSyncSourceLagSecs)), 
+            new repl::NetworkInterfaceImpl());
         if (serverGlobalParams.isHttpInterfaceEnabled)
             boost::thread web(stdx::bind(&webServerThread,
                                          new RestAdminAccess())); // takes ownership
@@ -331,7 +334,9 @@ namespace mongo {
         WriteUnitOfWork wunit(txn.recoveryUnit());
 
         vector< string > dbNames;
-        globalStorageEngine->listDatabases( &dbNames );
+
+        StorageEngine* storageEngine = getGlobalEnvironment()->getGlobalStorageEngine();
+        storageEngine->listDatabases( &dbNames );
 
         for ( vector< string >::iterator i = dbNames.begin(); i != dbNames.end(); ++i ) {
             string dbName = *i;
@@ -348,7 +353,7 @@ namespace mongo {
                 ctx.db()->clearTmpCollections(&txn);
 
             if ( storageGlobalParams.repair ) {
-                fassert(18506, globalStorageEngine->repairDatabase(&txn, dbName));
+                fassert(18506, storageEngine->repairDatabase(&txn, dbName));
             }
             else if (!ctx.db()->getDatabaseCatalogEntry()->currentFilesCompatible(&txn)) {
                 log() << "****";
@@ -363,10 +368,11 @@ namespace mongo {
 
                 const string systemIndexes = ctx.db()->name() + ".system.indexes";
                 Collection* coll = ctx.db()->getCollection( &txn, systemIndexes );
-                auto_ptr<Runner> runner(InternalPlanner::collectionScan(&txn, systemIndexes,coll));
+                auto_ptr<PlanExecutor> exec(
+                    InternalPlanner::collectionScan(&txn, systemIndexes,coll));
                 BSONObj index;
-                Runner::RunnerState state;
-                while (Runner::RUNNER_ADVANCED == (state = runner->getNext(&index, NULL))) {
+                PlanExecutor::ExecState state;
+                while (PlanExecutor::ADVANCED == (state = exec->getNext(&index, NULL))) {
                     const BSONObj key = index.getObjectField("key");
                     const string plugin = IndexNames::findPluginName(key);
 
@@ -391,11 +397,11 @@ namespace mongo {
                     }
                 }
 
-                if (Runner::RUNNER_EOF != state) {
+                if (PlanExecutor::IS_EOF != state) {
                     warning() << "Internal error while reading collection " << systemIndexes;
                 }
 
-                Database::closeDatabase(&txn, dbName.c_str());
+                dbHolder().close( &txn, dbName );
             }
         }
         wunit.commit();
@@ -467,7 +473,8 @@ namespace mongo {
                 }
 
                 Date_t start = jsTime();
-                int numFiles = globalStorageEngine->flushAllFiles( true );
+                StorageEngine* storageEngine = getGlobalEnvironment()->getGlobalStorageEngine();
+                int numFiles = storageEngine->flushAllFiles( true );
                 time_flushing = (int) (jsTime() - start);
 
                 _flushed(time_flushing);
@@ -621,7 +628,11 @@ namespace mongo {
             exitCleanly(EXIT_CLEAN);
         }
 
-        uassertStatusOK(getGlobalAuthorizationManager()->initialize());
+        {
+            OperationContextImpl txn;
+
+            uassertStatusOK(getGlobalAuthorizationManager()->initialize(&txn));
+        }
 
         /* this is for security on certain platforms (nonce generation) */
         srand((unsigned) (curTimeMicros() ^ startupSrandTimer.micros()));
@@ -663,36 +674,41 @@ namespace mongo {
         listen(listenPort);
 
         // listen() will return when exit code closes its socket.
-        exitCleanly(EXIT_NET_ERROR);
     }
 
-    static void initAndListen(int listenPort) {
+    ExitCode initAndListen(int listenPort) {
         try {
             _initAndListen(listenPort);
+
+            return EXIT_NET_ERROR;
         }
         catch ( DBException &e ) {
             log() << "exception in initAndListen: " << e.toString() << ", terminating" << endl;
-            dbexit( EXIT_UNCAUGHT );
+            return EXIT_UNCAUGHT;
         }
         catch ( std::exception &e ) {
-            log() << "exception in initAndListen std::exception: " << e.what() << ", terminating" << endl;
-            dbexit( EXIT_UNCAUGHT );
+            log() << "exception in initAndListen std::exception: " << e.what() << ", terminating";
+            return EXIT_UNCAUGHT;
         }
         catch ( int& n ) {
             log() << "exception in initAndListen int: " << n << ", terminating" << endl;
-            dbexit( EXIT_UNCAUGHT );
+            return EXIT_UNCAUGHT;
         }
         catch(...) {
             log() << "exception in initAndListen, terminating" << endl;
-            dbexit( EXIT_UNCAUGHT );
+            return EXIT_UNCAUGHT;
         }
     }
 
 #if defined(_WIN32)
-    void initService() {
+    ExitCode initService() {
         ntservice::reportStatus( SERVICE_RUNNING );
         log() << "Service running" << endl;
-        initAndListen(serverGlobalParams.port);
+        ExitCode exitCode = initAndListen(serverGlobalParams.port);
+
+        // ignore EXIT_NET_ERROR on clean shutdown since we return this when the listening socket
+        // is closed
+        return (exitCode == EXIT_NET_ERROR && inShutdown()) ? EXIT_CLEAN : exitCode;
     }
 #endif
 
@@ -828,12 +844,6 @@ MONGO_INITIALIZER(SetGlobalConfigExperiment)(InitializerContext* context) {
 }
 
 namespace {
-    // TODO(spencer): Remove this startup parameter once the new ReplicationCoordinator is fully
-    // working
-    MONGO_EXPORT_STARTUP_SERVER_PARAMETER(useNewReplCoordinator, bool, false);
-} // namespace
-
-namespace {
     repl::ReplSettings replSettings;
 } // namespace
 
@@ -843,14 +853,8 @@ namespace mongo {
     }
 } // namespace mongo
 
-MONGO_INITIALIZER(CreateReplicationCoordinator)(InitializerContext* context) {
-    if (useNewReplCoordinator) {
-        repl::setGlobalReplicationCoordinator(
-                new repl::ReplicationCoordinatorImpl(replSettings));
-    } else {
-        repl::setGlobalReplicationCoordinator(
-                new repl::LegacyReplicationCoordinator(replSettings));
-    }
+MONGO_INITIALIZER(CreateReplicationManager)(InitializerContext* context) {
+    repl::setGlobalReplicationCoordinator(new repl::HybridReplicationCoordinator(replSettings));
     return Status::OK();
 }
 
@@ -936,6 +940,7 @@ static int mongoDbMain(int argc, char* argv[], char **envp) {
 #endif
 
     StartupTest::runTests();
-    initAndListen(serverGlobalParams.port);
-    fassertFailed(18000);
+    ExitCode exitCode = initAndListen(serverGlobalParams.port);
+    exitCleanly(exitCode);
+    return 0;
 }

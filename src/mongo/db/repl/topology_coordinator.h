@@ -31,6 +31,7 @@
 #include <string>
 
 #include "mongo/base/disallow_copying.h"
+#include "mongo/db/repl/repl_coordinator.h"
 #include "mongo/db/repl/replication_executor.h"
 #include "mongo/stdx/functional.h"
 #include "mongo/util/net/hostandport.h"
@@ -43,10 +44,20 @@ namespace mongo {
 
 namespace repl {
 
-    class HeartbeatInfo;
-    class Member;
+    class MemberHeartbeatData;
     struct MemberState;
+    class ReplicaSetConfig;
+    class ReplSetHeartbeatResponse;
     class TagSubgroup;
+
+    /**
+     * Actions taken based on heartbeat responses
+     */
+    enum HeartbeatResultAction {
+        StepDown,
+        StartElection,
+        None
+    };
 
     /**
      * Replication Topology Coordinator interface.
@@ -59,67 +70,19 @@ namespace repl {
         MONGO_DISALLOW_COPYING(TopologyCoordinator);
     public:
 
-        // TODO(spencer): Move this and ReplicaSetConfig out of TopologyCoordinator
-        class MemberConfig {
-        public:
-        MemberConfig() :
-            _id(-1),
-                votes(1),
-                priority(1.0),
-                arbiterOnly(false),
-                slaveDelay(0),
-                hidden(false),
-                buildIndexes(true) { }
-            int _id;              /* ordinal */
-            unsigned votes;       /* how many votes this node gets. default 1. */
-            HostAndPort h;
-            double priority;      /* 0 means can never be primary */
-            bool arbiterOnly;
-            int slaveDelay;       /* seconds.  */
-            bool hidden;          /* if set, don't advertise to drivers in isMaster. */
-                                  /* for non-primaries (priority 0) */
-            bool buildIndexes;    /* if false, do not create any non-_id indexes */
-            std::map<std::string,std::string> tags;     /* tagging for data center, rack, etc. */
-        private:
-            std::set<TagSubgroup*> _groups; // the subgroups this member belongs to
-        };
-
-        struct ReplicaSetConfig {
-            // TODO(spencer): make sure it is safe to copy this
-            std::vector<MemberConfig> members;
-            std::string replSetName;
-            int version;
-            MemberConfig* self;
-
-            /**
-             * If replication can be chained. If chaining is disallowed, it can still be explicitly
-             * enabled via the replSetSyncFrom command, but it will not happen automatically.
-             */
-            bool chainingAllowed;
-
-            // Number of nodes needed for w:majority writes
-            int majorityNumber;
-
-            BSONObj asBson() const;
-
-            // Calculate majority number based on current config and store in majorityNumber;
-            // done as part of reconfig.
-            void calculateMajorityNumber();
-        };
-
         virtual ~TopologyCoordinator() {}
         
-        // The optime of the last op actually applied to the data
-        virtual void setLastApplied(const OpTime& optime) = 0;
         // The optime of the last op marked as committed by the leader
         virtual void setCommitOkayThrough(const OpTime& optime) = 0;
         // The optime of the last op received over the network from the sync source
         virtual void setLastReceived(const OpTime& optime) = 0;
+        // The index into the config used when we next choose a sync source
+        virtual void setForceSyncSourceIndex(int index) = 0;
 
         // Looks up _syncSource's address and returns it, for use by the Applier
         virtual HostAndPort getSyncSourceAddress() const = 0;
-        // Chooses and sets a new sync source, based on our current knowledge of the world
-        virtual void chooseNewSyncSource(Date_t now) = 0; // this is basically getMemberToSyncTo()
+        // Chooses and sets a new sync source, based on our current knowledge of the world.
+        virtual void chooseNewSyncSource(Date_t now, const OpTime& lastOpApplied) = 0;
         // Do not choose a member as a sync source until time given; 
         // call this when we have reason to believe it's a bad choice
         virtual void blacklistSyncSource(const HostAndPort& host, Date_t until) = 0;
@@ -127,7 +90,8 @@ namespace repl {
         // Add function pointer to callback list; call function when config changes
         // Applier needs to know when things like chainingAllowed or slaveDelay change. 
         // ReplCoord needs to know when things like the tag sets change.
-        typedef stdx::function<void (const ReplicaSetConfig& config)> ConfigChangeCallbackFn;
+        typedef stdx::function<void (const ReplicaSetConfig& config, int myIndex)>
+                ConfigChangeCallbackFn;
         virtual void registerConfigChangeCallback(const ConfigChangeCallbackFn& fn) = 0;
         // ReplCoord needs to know the state to implement certain public functions
         typedef stdx::function<void (const MemberState& newMemberState)> StateChangeCallbackFn;
@@ -137,25 +101,60 @@ namespace repl {
         virtual void signalDrainComplete() = 0;
 
         // produce a reply to a RAFT-style RequestVote RPC
-        virtual bool prepareRequestVoteResponse(const BSONObj& cmdObj, 
+        virtual void prepareRequestVoteResponse(const Date_t now,
+                                                const BSONObj& cmdObj,
+                                                const OpTime& lastOpApplied,
                                                 std::string& errmsg, 
                                                 BSONObjBuilder& result) = 0; 
 
         // produce a reply to a received electCmd
-        virtual void prepareElectCmdResponse(const BSONObj& cmdObj, BSONObjBuilder& result) = 0;
+        virtual void prepareElectCmdResponse(const Date_t now,
+                                             const BSONObj& cmdObj,
+                                             BSONObjBuilder& result) = 0;
 
         // produce a reply to a heartbeat
         virtual void prepareHeartbeatResponse(const ReplicationExecutor::CallbackData& data,
                                               Date_t now,
-                                              const BSONObj& cmdObj, 
-                                              BSONObjBuilder* resultObj,
+                                              const ReplSetHeartbeatArgs& args,
+                                              const std::string& ourSetName,
+                                              const OpTime& lastOpApplied,
+                                              ReplSetHeartbeatResponse* response,
                                               Status* result) = 0;
 
-        // update internal state with heartbeat response
-        virtual void updateHeartbeatInfo(Date_t now, const HeartbeatInfo& newInfo) = 0;
+        // update internal state with heartbeat response corresponding to 'id'
+        virtual HeartbeatResultAction updateHeartbeatData(Date_t now,
+                                                          const MemberHeartbeatData& newInfo,
+                                                          int id,
+                                                          const OpTime& lastOpApplied) = 0;
+
+        // produce a reply to a status request
+        virtual void prepareStatusResponse(const ReplicationExecutor::CallbackData& data,
+                                           Date_t now,
+                                           unsigned uptime,
+                                           const OpTime& lastOpApplied,
+                                           BSONObjBuilder* response,
+                                           Status* result) = 0;
+
+        // produce a reply to a freeze request
+        virtual void prepareFreezeResponse(const ReplicationExecutor::CallbackData& data,
+                                           Date_t now,
+                                           int secs,
+                                           BSONObjBuilder* response,
+                                           Status* result) = 0;
 
         // transition PRIMARY to SECONDARY; caller must already be holding an appropriate dblock
         virtual void relinquishPrimary(OperationContext* txn) = 0;
+
+        // called with new config; notifies all on change
+        virtual void updateConfig(const ReplicationExecutor::CallbackData& cbData,
+                                  const ReplicaSetConfig& newConfig,
+                                  int selfIndex,
+                                  Date_t now,
+                                  const OpTime& lastOpApplied) = 0;
+
+        // Record a "ping" based on the round-trip time of the heartbeat for the member
+        virtual void recordPing(const HostAndPort& host, const int elapsedMillis) = 0;
+
     protected:
         TopologyCoordinator() {}
     };

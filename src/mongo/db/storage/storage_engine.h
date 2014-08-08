@@ -42,18 +42,57 @@ namespace mongo {
     class RecoveryUnit;
     struct StorageGlobalParams;
 
+    /**
+     * The StorageEngine class is the top level interface for creating a new storage
+     * engine.  All StorageEngine(s) must be registered by calling registerFactory in order
+     * to possibly be activated.
+     */
     class StorageEngine {
     public:
+        //
+        // Static methods for registering StorageEngine implementations.  XXX: global config
+        //
+        class Factory {
+        public:
+            virtual ~Factory() { }
+            virtual StorageEngine* create( const StorageGlobalParams& params ) const = 0;
+        };
 
+        static void registerFactory( const std::string& name, const Factory* factory );
+
+        /**
+         * Returns a new interface to the storage engine's recovery unit.  The recovery
+         * unit is the durability interface.  For details, see recovery_unit.h
+         *
+         * Caller owns the returned pointer.
+         */
         virtual RecoveryUnit* newRecoveryUnit( OperationContext* opCtx ) = 0;
 
+        /**
+         * List the databases stored in this storage engine.
+         *
+         * XXX: why doesn't this take OpCtx?
+         */
         virtual void listDatabases( std::vector<std::string>* out ) const = 0;
 
         /**
-         * TODO: document ownership semantics
+         * Return the DatabaseCatalogEntry that describes the database indicated by 'db'.
+         *
+         * StorageEngine owns returned pointer.
+         * It should not be deleted by any caller.
          */
         virtual DatabaseCatalogEntry* getDatabaseCatalogEntry( OperationContext* opCtx,
                                                                const StringData& db ) = 0;
+
+        /**
+         * Closes all file handles associated with a database.
+         */
+        virtual Status closeDatabase( OperationContext* txn, const StringData& db ) = 0;
+
+        /**
+         * Deletes all data and metadata for a database.
+         */
+        virtual Status dropDatabase( OperationContext* txn, const StringData& db ) = 0;
 
         /**
          * @return number of files flushed
@@ -66,19 +105,12 @@ namespace mongo {
                                        bool backupOriginalFiles = false ) = 0;
 
         /**
-         * Will be called before a clean shutdown.
-         * Override if you have clean-up to do that is different from unclean shutdown.
+         * This method will be called before there is a clean shutdown.  Storage engines should
+         * override this method if they have clean-up to do that is different from unclean shutdown.
+         *
          * There is intentionally no uncleanShutdown().
          */
         virtual void cleanShutdown(OperationContext* txn) {}
-
-        class Factory {
-        public:
-            virtual ~Factory(){}
-            virtual StorageEngine* create( const StorageGlobalParams& params ) const = 0;
-        };
-
-        static void registerFactory( const std::string& name, const Factory* factory );
 
     protected:
         /**

@@ -50,7 +50,7 @@ namespace repl {
         ReplicationCoordinator* replCoord = getGlobalReplicationCoordinator();
         if (replCoord->getSettings().usingReplSets()) {
             if (replCoord->getReplicationMode() != ReplicationCoordinator::modeReplSet
-                    || replCoord->getCurrentMemberState().shunned()) {
+                    || replCoord->getCurrentMemberState().removed()) {
                 result.append("ismaster", false);
                 result.append("secondary", false);
                 result.append("info", ReplSet::startupStatusMsg.get());
@@ -62,7 +62,8 @@ namespace repl {
             return;
         }
         
-        if ( replAllDead ) {
+        // TODO(dannenberg) replAllDead is bad and should be removed when master slave is removed
+        if (replAllDead) {
             result.append("ismaster", 0);
             string s = string("dead: ") + replAllDead;
             result.append("info", s);
@@ -83,14 +84,14 @@ namespace repl {
             {
                 const char* localSources = "local.sources";
                 Client::ReadContext ctx(txn, localSources);
-                auto_ptr<Runner> runner(
+                auto_ptr<PlanExecutor> exec(
                     InternalPlanner::collectionScan(txn,
                                                     localSources,
                                                     ctx.ctx().db()->getCollection(txn,
                                                                                   localSources)));
                 BSONObj obj;
-                Runner::RunnerState state;
-                while (Runner::RUNNER_ADVANCED == (state = runner->getNext(&obj, NULL))) {
+                PlanExecutor::ExecState state;
+                while (PlanExecutor::ADVANCED == (state = exec->getNext(&obj, NULL))) {
                     src.push_back(obj);
                 }
             }

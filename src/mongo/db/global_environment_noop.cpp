@@ -32,6 +32,10 @@
 
 namespace mongo {
 
+    StorageEngine* GlobalEnvironmentNoop::getGlobalStorageEngine() {
+        return NULL;
+    }
+
     void GlobalEnvironmentNoop::setKillAllOperations() { }
 
     void GlobalEnvironmentNoop::unsetKillAllOperations() { }
@@ -40,7 +44,7 @@ namespace mongo {
         return false;
     }
 
-    bool GlobalEnvironmentNoop::killOperation(AtomicUInt opId) {
+    bool GlobalEnvironmentNoop::killOperation(unsigned int opId) {
         return false;
     }
 

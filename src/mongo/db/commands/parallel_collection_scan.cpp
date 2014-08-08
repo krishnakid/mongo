@@ -33,6 +33,7 @@
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/exec/multi_iterator.h"
 #include "mongo/util/touch_pages.h"
 
 namespace mongo {
@@ -47,98 +48,6 @@ namespace mongo {
             }
             DiskLoc diskLoc;
             size_t size;
-        };
-
-        class MultiIteratorRunner : public Runner {
-        public:
-            MultiIteratorRunner( const StringData& ns, Collection* collection )
-                : _ns( ns.toString() ),
-                  _collection( collection ) {
-            }
-            ~MultiIteratorRunner() {
-            }
-
-            // takes ownership of it
-            void addIterator(RecordIterator* it) {
-                _iterators.push_back(it);
-            }
-
-            virtual RunnerState getNext(BSONObj* objOut, DiskLoc* dlOut) {
-                if ( _collection == NULL )
-                    return RUNNER_DEAD;
-
-                DiskLoc next = _advance();
-                if (next.isNull())
-                    return RUNNER_EOF;
-
-                if ( objOut )
-                    *objOut = _collection->docFor( next );
-                if ( dlOut )
-                    *dlOut = next;
-                return RUNNER_ADVANCED;
-            }
-
-            virtual bool isEOF() {
-                return _collection == NULL || _iterators.empty();
-            }
-            virtual void kill() {
-                _collection = NULL;
-                _iterators.clear();
-            }
-            virtual void saveState() {
-                for (size_t i = 0; i < _iterators.size(); i++) {
-                    _iterators[i]->prepareToYield();
-                }
-            }
-            virtual bool restoreState(OperationContext* opCtx) {
-                for (size_t i = 0; i < _iterators.size(); i++) {
-                    if (!_iterators[i]->recoverFromYield()) {
-                        kill();
-                        return false;
-                    }
-                }
-                return true;
-            }
-
-            virtual const string& ns() { return _ns; }
-            virtual void invalidate(const DiskLoc& dl, InvalidationType type) {
-                switch ( type ) {
-                case INVALIDATION_DELETION:
-                    for (size_t i = 0; i < _iterators.size(); i++) {
-                        _iterators[i]->invalidate(dl);
-                    }
-                    break;
-                case INVALIDATION_MUTATION:
-                    // no-op
-                    break;
-                }
-            }
-            virtual const Collection* collection() {
-                return _collection;
-            }
-            virtual Status getInfo(TypeExplain** explain, PlanInfo** planInfo) const {
-                return Status( ErrorCodes::InternalError, "no" );
-            }
-        private:
-
-            /**
-             * @return if more data
-             */
-            DiskLoc _advance() {
-                while (!_iterators.empty()) {
-                    DiskLoc out = _iterators.back()->getNext();
-                    if (!out.isNull())
-                        return out;
-
-                    _iterators.popAndDeleteBack();
-                }
-
-                return DiskLoc();
-            }
-
-            string _ns;
-            Collection* _collection;
-            OwnedPointerVector<RecordIterator> _iterators;
         };
 
         // ------------------------------------------------
@@ -191,23 +100,28 @@ namespace mongo {
                 numCursors = iterators.size();
             }
 
-            OwnedPointerVector<MultiIteratorRunner> runners;
+            OwnedPointerVector<PlanExecutor> execs;
             for ( size_t i = 0; i < numCursors; i++ ) {
-                runners.push_back(new MultiIteratorRunner(ns.ns(), collection));
+                WorkingSet* ws = new WorkingSet();
+                MultiIteratorStage* mis = new MultiIteratorStage(ws, collection);
+                // Takes ownership of 'ws' and 'mis'.
+                execs.push_back(new PlanExecutor(ws, mis, collection));
             }
 
-            // transfer iterators to runners using a round-robin distribution.
+            // transfer iterators to executors using a round-robin distribution.
             // TODO consider using a common work queue once invalidation issues go away.
             for (size_t i = 0; i < iterators.size(); i++) {
-                runners[i % runners.size()]->addIterator(iterators.releaseAt(i));
+                PlanExecutor* theExec = execs[i % execs.size()];
+                MultiIteratorStage* mis = static_cast<MultiIteratorStage*>(theExec->getRootStage());
+                mis->addIterator(iterators.releaseAt(i));
             }
 
             {
                 BSONArrayBuilder bucketsBuilder;
-                for (size_t i = 0; i < runners.size(); i++) {
-                    // transfer ownership of a runner to the ClientCursor (which manages its own
+                for (size_t i = 0; i < execs.size(); i++) {
+                    // transfer ownership of an executor to the ClientCursor (which manages its own
                     // lifetime).
-                    ClientCursor* cc = new ClientCursor( collection, runners.releaseAt(i) );
+                    ClientCursor* cc = new ClientCursor( collection, execs.releaseAt(i) );
 
                     // we are mimicking the aggregation cursor output here
                     // that is why there are ns, ok and empty firstBatch

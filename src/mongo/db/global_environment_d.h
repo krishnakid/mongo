@@ -42,13 +42,15 @@ namespace mongo {
 
         ~GlobalEnvironmentMongoD();
 
+        StorageEngine* getGlobalStorageEngine();
+
         void setKillAllOperations();
 
         void unsetKillAllOperations();
 
         bool getKillAllOperations();
 
-        bool killOperation(AtomicUInt opId);
+        bool killOperation(unsigned int opId);
 
         void registerOperationContext(OperationContext* txn);
 

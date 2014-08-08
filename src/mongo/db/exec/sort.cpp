@@ -415,14 +415,14 @@ namespace mongo {
         return PlanStage::ADVANCED;
     }
 
-    void SortStage::prepareToYield() {
+    void SortStage::saveState() {
         ++_commonStats.yields;
-        _child->prepareToYield();
+        _child->saveState();
     }
 
-    void SortStage::recoverFromYield() {
+    void SortStage::restoreState(OperationContext* opCtx) {
         ++_commonStats.unyields;
-        _child->recoverFromYield();
+        _child->restoreState(opCtx);
     }
 
     void SortStage::invalidate(const DiskLoc& dl, InvalidationType type) {

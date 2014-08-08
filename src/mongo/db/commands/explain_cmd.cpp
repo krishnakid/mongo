@@ -34,7 +34,6 @@
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/query/explain.h"
-#include "mongo/db/query/get_runner.h"
 #include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
@@ -75,6 +74,9 @@ namespace mongo {
             }
             else if (mongoutils::str::equals(verbStr, "allPlansExecution")) {
                 verbosity = Explain::EXEC_ALL_PLANS;
+            }
+            else if (mongoutils::str::equals(verbStr, "full")) {
+                verbosity = Explain::FULL;
             }
             else if (!mongoutils::str::equals(verbStr, "queryPlanner")) {
                errmsg = "verbosity string must be one of "

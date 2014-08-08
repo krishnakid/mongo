@@ -34,7 +34,6 @@
 #include <fstream>
 
 #include "mongo/base/status.h"
-#include "mongo/bson/util/atomic_int.h"
 #include "mongo/db/audit.h"
 #include "mongo/db/auth/action_type.h"
 #include "mongo/db/auth/authorization_manager.h"
@@ -70,6 +69,7 @@
 #include "mongo/db/repl/repl_coordinator_global.h"
 #include "mongo/db/stats/counters.h"
 #include "mongo/db/storage_options.h"
+#include "mongo/platform/atomic_word.h"
 #include "mongo/platform/process_id.h"
 #include "mongo/s/d_logic.h"
 #include "mongo/s/stale_exception.h" // for SendStaleConfigException
@@ -104,7 +104,7 @@ namespace mongo {
 
     MONGO_FP_DECLARE(rsStopGetMore);
 
-    static void inProgCmd( Message &m, DbResponse &dbresponse ) {
+    static void inProgCmd(OperationContext* txn, Message &m, DbResponse &dbresponse) {
         DbMessage d(m);
         QueryMessage q(d);
         BSONObjBuilder b;
@@ -139,7 +139,7 @@ namespace mongo {
 
                 Client& me = cc();
                 scoped_lock bl(Client::clientsMutex);
-                Matcher m(filter, WhereCallbackReal(nss.db()));
+                Matcher m(filter, WhereCallbackReal(txn, nss.db()));
                 for( set<Client*>::iterator i = Client::clients.begin(); i != Client::clients.end(); i++ ) {
                     Client *c = *i;
                     verify( c );
@@ -150,6 +150,8 @@ namespace mongo {
                     verify( co );
                     if( all || co->displayInCurop() ) {
                         BSONObjBuilder infoBuilder;
+
+                        c->reportState(infoBuilder);
                         co->reportState(&infoBuilder);
 
                         const BSONObj info = infoBuilder.obj();
@@ -330,10 +332,11 @@ namespace mongo {
         // before we lock...
         int op = m.operation();
         bool isCommand = false;
-        const char *ns = m.singleData()->_data + 4;
+
+        DbMessage dbmsg(m);
 
         Client& c = cc();
-        if (!c.isGod()) {
+        if (!txn->isGod()) {
             c.getAuthorizationSession()->startRequest(txn);
 
             // We should not be holding any locks at this point
@@ -341,12 +344,14 @@ namespace mongo {
         }
 
         if ( op == dbQuery ) {
-            if( strstr(ns, ".$cmd") ) {
+            const char *ns = dbmsg.getns();
+
+            if (strstr(ns, ".$cmd")) {
                 isCommand = true;
                 opwrite(m);
                 if( strstr(ns, ".$cmd.sys.") ) {
                     if( strstr(ns, "$cmd.sys.inprog") ) {
-                        inProgCmd(m, dbresponse);
+                        inProgCmd(txn, m, dbresponse);
                         return;
                     }
                     if( strstr(ns, "$cmd.sys.killop") ) {
@@ -426,7 +431,8 @@ namespace mongo {
         }
         else if ( op == dbMsg ) {
             // deprecated - replaced by commands
-            char *p = m.singleData()->_data;
+            const char *p = dbmsg.getns();
+
             int len = strlen(p);
             if ( len > 400 )
                 log() << curTimeMillis64() % 10000 <<
@@ -443,8 +449,6 @@ namespace mongo {
         }
         else {
             try {
-                const NamespaceString nsString( ns );
-
                 // The following operations all require authorization.
                 // dbInsert, dbUpdate and dbDelete can be easily pre-authorized,
                 // here, but dbKillCursors cannot.
@@ -453,25 +457,32 @@ namespace mongo {
                     logThreshold = 10;
                     receivedKillCursors(txn, m);
                 }
-                else if ( !nsString.isValid() ) {
-                    // Only killCursors doesn't care about namespaces
-                    uassert( 16257, str::stream() << "Invalid ns [" << ns << "]", false );
-                }
-                else if ( op == dbInsert ) {
-                    receivedInsert(txn, m, currentOp);
-                }
-                else if ( op == dbUpdate ) {
-                    receivedUpdate(txn, m, currentOp);
-                }
-                else if ( op == dbDelete ) {
-                    receivedDelete(txn, m, currentOp);
-                }
-                else {
+                else if (op != dbInsert && op != dbUpdate && op != dbDelete) {
                     mongo::log() << "    operation isn't supported: " << op << endl;
                     currentOp.done();
                     shouldLog = true;
                 }
-            }
+                else {
+                    const char* ns = dbmsg.getns();
+                    const NamespaceString nsString(ns);
+
+                    if (!nsString.isValid()) {
+                        uassert(16257, str::stream() << "Invalid ns [" << ns << "]", false);
+                    }
+                    else if (op == dbInsert) {
+                        receivedInsert(txn, m, currentOp);
+                    }
+                    else if (op == dbUpdate) {
+                        receivedUpdate(txn, m, currentOp);
+                    }
+                    else if (op == dbDelete) {
+                        receivedDelete(txn, m, currentOp);
+                    }
+                    else {
+                        invariant(false);
+                    }
+                }
+             }
             catch (const UserException& ue) {
                 setLastError(ue.getCode(), ue.getInfo().msg.c_str());
                 LOG(3) << " Caught Assertion in " << opToString(op) << ", continuing "
@@ -514,9 +525,8 @@ namespace mongo {
     } /* assembleResponse() */
 
     void receivedKillCursors(OperationContext* txn, Message& m) {
-        int *x = (int *) m.singleData()->_data;
-        x++; // reserved
-        int n = *x++;
+        DbMessage dbmessage(m);
+        int n = dbmessage.pullInt();
 
         uassert( 13659 , "sent 0 cursors to kill" , n != 0 );
         massert( 13658 , str::stream() << "bad kill cursors size: " << m.dataSize() , m.dataSize() == 8 + ( 8 * n ) );
@@ -527,36 +537,14 @@ namespace mongo {
             verify( n < 30000 );
         }
 
-        int found = CollectionCursorCache::eraseCursorGlobalIfAuthorized(txn, n, (long long *) x);
+        const long long* cursorArray = dbmessage.getArray(n);
+
+        int found = CollectionCursorCache::eraseCursorGlobalIfAuthorized(txn, n, cursorArray);
 
         if ( logger::globalLogDomain()->shouldLog(logger::LogSeverity::Debug(1)) || found != n ) {
             LOG( found == n ? 1 : 0 ) << "killcursors: found " << found << " of " << n << endl;
         }
 
-    }
-
-    /*static*/ 
-    void Database::closeDatabase(OperationContext* txn, const string& db) {
-        // XXX? - Do we need to close database under global lock or just DB-lock is sufficient ?
-        invariant(txn->lockState()->isW());
-
-        Database* database = dbHolder().get(txn, db);
-        if ( !database )
-            return;
-
-        repl::oplogCheckCloseDatabase(txn, database); // oplog caches some things, dirty its caches
-
-        if( BackgroundOperation::inProgForDb(db) ) {
-            log() << "warning: bg op in prog during close db? " << db << endl;
-        }
-
-        // Before the files are closed, flush any potentially outstanding changes, which might
-        // reference this database. Otherwise we will assert when subsequent commit if needed
-        // is called and it happens to have write intents for the removed files.
-        txn->recoveryUnit()->commitIfNeeded(true);
-
-        dbHolder().erase(txn, db);
-        delete database; // closes files
     }
 
     void receivedUpdate(OperationContext* txn, Message& m, CurOp& op) {
@@ -587,7 +575,7 @@ namespace mongo {
         op.debug().query = query;
         op.setQuery(query);
 
-        UpdateRequest request(ns);
+        UpdateRequest request(txn, ns);
 
         request.setUpsert(upsert);
         request.setMulti(multi);
@@ -600,7 +588,6 @@ namespace mongo {
         uassertStatusOK(executor.prepare());
 
         Lock::DBWrite lk(txn->lockState(), ns.ns(), useExperimentalDocLocking);
-        WriteUnitOfWork wunit(txn->recoveryUnit());
 
         // if this ever moves to outside of lock, need to adjust check
         // Client::Context::_finishInit
@@ -609,11 +596,10 @@ namespace mongo {
 
         Client::Context ctx(txn,  ns );
 
-        UpdateResult res = executor.execute(txn, ctx.db());
+        UpdateResult res = executor.execute(ctx.db());
 
         // for getlasterror
         lastError.getSafe()->recordUpdate( res.existing , res.numMatched , res.upserted );
-        wunit.commit();
     }
 
     void receivedDelete(OperationContext* txn, Message& m, CurOp& op) {
@@ -635,14 +621,13 @@ namespace mongo {
         op.debug().query = pattern;
         op.setQuery(pattern);
 
-        DeleteRequest request(ns);
+        DeleteRequest request(txn, ns);
         request.setQuery(pattern);
         request.setMulti(!justOne);
         request.setUpdateOpLog(true);
         DeleteExecutor executor(&request);
         uassertStatusOK(executor.prepare());
         Lock::DBWrite lk(txn->lockState(), ns.ns());
-        WriteUnitOfWork wunit(txn->recoveryUnit());
 
         // if this ever moves to outside of lock, need to adjust check Client::Context::_finishInit
         if ( ! broadcast && handlePossibleShardedMessage( m , 0 ) )
@@ -650,10 +635,9 @@ namespace mongo {
 
         Client::Context ctx(txn, ns);
 
-        long long n = executor.execute(txn, ctx.db());
+        long long n = executor.execute(ctx.db());
         lastError.getSafe()->recordDelete( n );
         op.debug().ndeleted = n;
-        wunit.commit();
     }
 
     QueryResult* emptyMoreResult(long long);
@@ -992,16 +976,15 @@ namespace {
         return (unsigned long long )res;
     }
 
-    DBClientBase* createDirectClient() {
-        return new DBDirectClient();
+    DBClientBase* createDirectClient(OperationContext* txn) {
+        return new DBDirectClient(txn);
     }
 
 
-    mongo::mutex exitMutex("exit");
-    AtomicUInt numExitCalls = 0;
+    static AtomicUInt32 shutdownInProgress(0);
 
     bool inShutdown() {
-        return numExitCalls > 0;
+        return shutdownInProgress.loadRelaxed() != 0;
     }
 
     static void shutdownServer(OperationContext* txn) {
@@ -1018,10 +1001,13 @@ namespace {
         log() << "shutdown: going to close sockets..." << endl;
         boost::thread close_socket_thread( stdx::bind(MessagingPort::closeAllSockets, 0) );
 
-        globalStorageEngine->cleanShutdown(txn);
+        StorageEngine* storageEngine = getGlobalEnvironment()->getGlobalStorageEngine();
+        storageEngine->cleanShutdown(txn);
     }
 
     void exitCleanly( ExitCode code ) {
+        shutdownInProgress.store(1);
+
         getGlobalEnvironment()->setKillAllOperations();
 
         repl::getGlobalReplicationCoordinator()->shutdown();
@@ -1051,22 +1037,10 @@ namespace {
         dbexit( code );
     }
 
-    /* not using log() herein in case we are already locked */
     NOINLINE_DECL void dbexit( ExitCode rc, const char *why ) {
         flushForGcov();
 
         audit::logShutdown(currentClient.get());
-        {
-            scoped_lock lk( exitMutex );
-            if ( numExitCalls++ > 0 ) {
-                if ( numExitCalls > 5 ) {
-                    // this means something horrible has happened
-                    ::_exit( rc );
-                }
-                log() << "dbexit: " << why << "; exiting immediately";
-                ::_exit( rc );
-            }
-        }
 
         log() << "dbexit: " << why;
 
@@ -1085,7 +1059,7 @@ namespace {
             return;
         }
 #endif
-        log() << "dbexit: really exiting now";
+
         ::_exit(rc);
     }
 

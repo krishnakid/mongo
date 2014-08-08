@@ -33,12 +33,13 @@
 #include "mongo/util/mongoutils/str.h"
 
 #include <algorithm>
+#include <math.h>
 
 // for updateCache
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/client.h"
-#include "mongo/db/query/explain_plan.h"
+#include "mongo/db/query/explain.h"
 #include "mongo/db/query/plan_cache.h"
 #include "mongo/db/query/plan_ranker.h"
 #include "mongo/db/query/qlog.h"
@@ -62,28 +63,9 @@ namespace mongo {
           _commonStats(kStageType) { }
 
     MultiPlanStage::~MultiPlanStage() {
-        if (bestPlanChosen()) {
-            delete _candidates[_bestPlanIdx].root;
-
-            // for now, the runner that executes this multi-plan-stage wants to own
-            // the query solution for the best plan.  So we won't delete it here.
-            // eventually, plan stages may own their query solutions.
-            // 
-            // delete _candidates[_bestPlanIdx].solution; // (owned by containing runner)
-
-            if (hasBackupPlan()) {
-                delete _candidates[_backupPlanIdx].solution;
-                delete _candidates[_backupPlanIdx].root;
-            }
-
-            // Clean up the losing candidates.
-            clearCandidates();
-        }
-        else {
-            for (size_t ix = 0; ix < _candidates.size(); ++ix) {
-                delete _candidates[ix].solution;
-                delete _candidates[ix].root;
-            }
+        for (size_t ix = 0; ix < _candidates.size(); ++ix) {
+            delete _candidates[ix].solution;
+            delete _candidates[ix].root;
         }
 
         for (vector<PlanStageStats*>::iterator it = _candidateStats.begin();
@@ -151,9 +133,7 @@ namespace mongo {
         }
 
         if (hasBackupPlan() && PlanStage::ADVANCED == state) {
-            QLOG() << "Best plan had a blocking sort, became unblocked, deleting backup plan\n";
-            delete _candidates[_backupPlanIdx].solution;
-            delete _candidates[_backupPlanIdx].root;
+            QLOG() << "Best plan had a blocking stage, became unblocked\n";
             _backupPlanIdx = kNoSuchPlan;
         }
 
@@ -210,7 +190,7 @@ namespace mongo {
         QuerySolution* bestSolution = bestCandidate.solution;
 
         QLOG() << "Winning solution:\n" << bestSolution->toString() << endl;
-        LOG(2) << "Winning plan: " << getPlanSummary(*bestSolution);
+        LOG(2) << "Winning plan: " << Explain::getPlanSummary(bestCandidate.root);
 
         _backupPlanIdx = kNoSuchPlan;
         if (bestSolution->hasBlockingStage && (0 == alreadyProduced.size())) {
@@ -221,6 +201,44 @@ namespace mongo {
                     _backupPlanIdx = ix;
                     break;
                 }
+            }
+        }
+
+        // Logging for tied plans.
+        if (ranking->tieForBest && NULL != _collection) {
+            // These arrays having two or more entries is implied by 'tieForBest'.
+            invariant(ranking->scores.size() > 1);
+            invariant(ranking->candidateOrder.size() > 1);
+
+            size_t winnerIdx = ranking->candidateOrder[0];
+            size_t runnerUpIdx = ranking->candidateOrder[1];
+
+            LOG(1) << "Winning plan tied with runner-up."
+                   << " ns: " << _collection->ns()
+                   << " " << _query->toStringShort()
+                   << " winner score: " << ranking->scores[0]
+                   << " winner summary: "
+                   << Explain::getPlanSummary(_candidates[winnerIdx].root)
+                   << " runner-up score: " << ranking->scores[1]
+                   << " runner-up summary: "
+                   << Explain::getPlanSummary(_candidates[runnerUpIdx].root);
+
+            // There could be more than a 2-way tie, so log the stats for the remaining plans
+            // involved in the tie.
+            static const double epsilon = 1e-10;
+            for (size_t i = 2; i < ranking->scores.size(); i++) {
+                if (fabs(ranking->scores[i] - ranking->scores[0]) >= epsilon) {
+                    break;
+                }
+
+                size_t planIdx = ranking->candidateOrder[i];
+
+                LOG(1) << "Plan " << i << " involved in multi-way tie."
+                       << " ns: " << _collection->ns()
+                       << " " << _query->toStringShort()
+                       << " score: " << ranking->scores[i]
+                       << " summary: "
+                       << Explain::getPlanSummary(_candidates[planIdx].root);
             }
         }
 
@@ -276,18 +294,6 @@ namespace mongo {
         }
 
         return _candidateStats;
-    }
-
-    void MultiPlanStage::clearCandidates() {
-        // Clear out the candidate plans, leaving only stats as we're all done w/them.
-        // Traverse candidate plans in order or score
-        for (size_t ix = 0; ix < _candidates.size(); ix++) {
-            if (ix == (size_t)_bestPlanIdx) { continue; }
-            if (ix == (size_t)_backupPlanIdx) { continue; }
-
-            delete _candidates[ix].root;
-            delete _candidates[ix].solution;
-        }
     }
 
     bool MultiPlanStage::workAllPlans(size_t numResults) {
@@ -370,7 +376,7 @@ namespace mongo {
         return Status::OK();
     }
 
-    void MultiPlanStage::prepareToYield() {
+    void MultiPlanStage::saveState() {
         if (_failure) return;
 
         // this logic is from multi_plan_runner
@@ -378,9 +384,9 @@ namespace mongo {
         // the _bestPlan if we've switched to the backup?
 
         if (bestPlanChosen()) {
-            _candidates[_bestPlanIdx].root->prepareToYield();
+            _candidates[_bestPlanIdx].root->saveState();
             if (hasBackupPlan()) {
-                _candidates[_backupPlanIdx].root->prepareToYield();
+                _candidates[_backupPlanIdx].root->saveState();
             }
         }
         else {
@@ -388,7 +394,7 @@ namespace mongo {
         }
     }
 
-    void MultiPlanStage::recoverFromYield() {
+    void MultiPlanStage::restoreState(OperationContext* opCtx) {
         if (_failure) return;
 
         // this logic is from multi_plan_runner
@@ -396,13 +402,13 @@ namespace mongo {
         // the _bestPlan if we've switched to the backup?
 
         if (bestPlanChosen()) {
-            _candidates[_bestPlanIdx].root->recoverFromYield();
+            _candidates[_bestPlanIdx].root->restoreState(opCtx);
             if (hasBackupPlan()) {
-                _candidates[_backupPlanIdx].root->recoverFromYield();
+                _candidates[_backupPlanIdx].root->restoreState(opCtx);
             }
         }
         else {
-            allPlansRestoreState();
+            allPlansRestoreState(opCtx);
         }
     }
 
@@ -472,13 +478,13 @@ namespace mongo {
 
     void MultiPlanStage::allPlansSaveState() {
         for (size_t i = 0; i < _candidates.size(); ++i) {
-            _candidates[i].root->prepareToYield();
+            _candidates[i].root->saveState();
         }
     }
 
-    void MultiPlanStage::allPlansRestoreState() {
+    void MultiPlanStage::allPlansRestoreState(OperationContext* opCtx) {
         for (size_t i = 0; i < _candidates.size(); ++i) {
-            _candidates[i].root->recoverFromYield();
+            _candidates[i].root->restoreState(opCtx);
         }
     }
 

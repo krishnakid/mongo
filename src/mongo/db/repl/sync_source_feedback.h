@@ -29,46 +29,50 @@
 
 #pragma once
 
-#include "mongo/db/repl/oplogreader.h"
+#include <boost/scoped_ptr.hpp>
+#include <boost/thread/mutex.hpp>
+#include <boost/thread/condition_variable.hpp>
+
 #include "mongo/client/constants.h"
 #include "mongo/client/dbclientcursor.h"
-#include "mongo/util/background.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
+
+    class OperationContext;
+
 namespace repl {
 
     class Member;
 
-    class SyncSourceFeedback : public BackgroundJob {
+    class SyncSourceFeedback {
     public:
-        SyncSourceFeedback() : BackgroundJob(false /*don't selfdelete*/),
-                              _syncTarget(NULL),
-                              _positionChanged(false),
-                              _handshakeNeeded(false) {}
-
-        ~SyncSourceFeedback() {}
-
-        /// Adds an entry to _members for a secondary that has connected to us.
-        void associateMember(const OID& rid, Member* member);
+        SyncSourceFeedback();
+        ~SyncSourceFeedback();
 
         /// Ensures local.me is populated and populates it if not.
-        void ensureMe();
+        /// TODO(spencer): Remove this function once the LegacyReplicationCoordinator is gone.
+        void ensureMe(OperationContext* txn);
 
-        /// Passes handshake up the replication chain, upon receiving a handshake.
+        /// Notifies the SyncSourceFeedbackThread to wake up and send a handshake up the replication
+        /// chain, upon receiving a handshake.
         void forwardSlaveHandshake();
 
-        void updateSelfInMap(const OpTime& ot) {
-            updateMap(_me["_id"].OID(), ot);
-        }
+        /// Notifies the SyncSourceFeedbackThread to wake up and send an update upstream of slave
+        /// replication progress.
+        void forwardSlaveProgress();
 
-        /// Updates the _slaveMap to be forwarded to the sync target.
-        void updateMap(const mongo::OID& rid, const OpTime& ot);
+        /// Returns the RID for this process.  ensureMe() must have been called before this can be.
+        /// TODO(spencer): Remove this function once the LegacyReplicationCoordinator is gone.
+        OID getMyRID() const { return _me["_id"].OID(); }
 
-        std::string name() const { return "SyncSourceFeedbackThread"; }
-
-        /// Loops forever, passing updates when they are present.
+        /// Loops continuously until shutdown() is called, passing updates when they are present.
+        /// TODO(spencer): Currently also can terminate when the global inShutdown() function
+        /// returns true.  Remove that once the legacy repl coordinator is gone.
         void run();
+
+        /// Signals the run() method to terminate.
+        void shutdown();
 
     private:
         void _resetConnection() {
@@ -88,39 +92,37 @@ namespace repl {
         /* Sends initialization information to our sync target, also determines whether or not they
          * support the updater command.
          */
-        bool replHandshake();
+        bool replHandshake(OperationContext* txn);
 
         /* Inform the sync target of our current position in the oplog, as well as the positions
          * of all secondaries chained through us.
          */
-        bool updateUpstream();
+        bool updateUpstream(OperationContext* txn);
 
         bool hasConnection() {
             return _connection.get();
         }
 
         /// Connect to sync target.
-        bool _connect(const std::string& hostName);
+        bool _connect(OperationContext* txn, const std::string& hostName);
 
         // stores our OID to be passed along in commands
+        /// TODO(spencer): Remove this once the LegacyReplicationCoordinator is gone.
         BSONObj _me;
         // the member we are currently syncing from
         const Member* _syncTarget;
         // our connection to our sync target
         boost::scoped_ptr<DBClientConnection> _connection;
-        // protects cond and maps and the indicator bools
+        // protects cond, _shutdownSignaled, and the indicator bools.
         boost::mutex _mtx;
-        // contains the most recent optime of each member syncing to us
-        std::map<mongo::OID, OpTime> _slaveMap;
-        typedef std::map<mongo::OID, Member*> OIDMemberMap;
-        // contains a pointer to each member, which we can look up by oid
-        OIDMemberMap _members;
         // used to alert our thread of changes which need to be passed up the chain
         boost::condition _cond;
         // used to indicate a position change which has not yet been pushed along
         bool _positionChanged;
         // used to indicate a connection change which has not yet been shook on
         bool _handshakeNeeded;
+        // Once this is set to true the _run method will terminate
+        bool _shutdownSignaled;
     };
 } // namespace repl
 } // namespace mongo

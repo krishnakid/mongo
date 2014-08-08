@@ -95,15 +95,15 @@ namespace mongo {
         // from the collection.  Returns DiskLoc() if isEOF.
         virtual DiskLoc getNext() = 0;
 
-        // Can only be called after prepareToYield and before recoverFromYield.
+        // Can only be called after saveState and before restoreState.
         virtual void invalidate(const DiskLoc& dl) = 0;
 
         // Save any state required to resume operation (without crashing) after DiskLoc deletion or
         // a collection drop.
-        virtual void prepareToYield() = 0;
+        virtual void saveState() = 0;
 
         // Returns true if collection still exists, false otherwise.
-        virtual bool recoverFromYield() = 0;
+        virtual bool restoreState() = 0;
 
         // normally this will just go back to the RecordStore and convert
         // but this gives the iterator an oppurtnity to optimize
@@ -122,6 +122,8 @@ namespace mongo {
 
         // name of the RecordStore implementation
         virtual const char* name() const = 0;
+
+        virtual const std::string& ns() const { return _ns; }
 
         virtual long long dataSize() const = 0;
 

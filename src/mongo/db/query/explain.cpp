@@ -31,6 +31,7 @@
 #include "mongo/db/query/explain.h"
 
 #include "mongo/db/exec/multi_plan.h"
+#include "mongo/db/query/explain_plan.h"
 #include "mongo/db/query/get_executor.h"
 #include "mongo/db/query/plan_executor.h"
 #include "mongo/db/query/query_planner.h"
@@ -114,6 +115,10 @@ namespace {
             const CountStats* spec = static_cast<const CountStats*>(specific);
             return spec->keysExamined;
         }
+        else if (STAGE_DISTINCT == type) {
+            const DistinctScanStats* spec = static_cast<const DistinctScanStats*>(specific);
+            return spec->keysExamined;
+        }
 
         return 0;
      }
@@ -193,10 +198,19 @@ namespace mongo {
     MONGO_EXPORT_SERVER_PARAMETER(enableNewExplain, bool, false);
 
     // static
-    void Explain::explainStatsTree(const PlanStageStats& stats,
-                                   Explain::Verbosity verbosity,
-                                   BSONObjBuilder* bob) {
+    void Explain::statsToBSON(const PlanStageStats& stats,
+                              Explain::Verbosity verbosity,
+                              BSONObjBuilder* bob,
+                              BSONObjBuilder* topLevelBob) {
         invariant(bob);
+        invariant(topLevelBob);
+
+        // Stop as soon as the BSON object we're building exceeds 10 MB.
+        static const int kMaxStatsBSONSize = 10 * 1024 * 1024;
+        if (topLevelBob->len() > kMaxStatsBSONSize) {
+            bob->append("warning", "stats tree exceeded 10 MB");
+            return;
+        }
 
         // Stage name.
         bob->append("stage", stats.common.stageTypeStr);
@@ -212,17 +226,46 @@ namespace mongo {
             bob->appendNumber("executionTimeMillis", stats.common.executionTimeMillis);
         }
 
+        // At full verbosity, we add some extra common details.
+        if (verbosity == Explain::FULL) {
+            bob->appendNumber("works", stats.common.works);
+            bob->appendNumber("advanced", stats.common.advanced);
+            bob->appendNumber("needTime", stats.common.needTime);
+            bob->appendNumber("isEOF", stats.common.isEOF);
+            bob->appendNumber("invalidates", stats.common.invalidates);
+        }
+
         // Stage-specific stats
-        if (STAGE_IXSCAN == stats.stageType) {
-            IndexScanStats* spec = static_cast<IndexScanStats*>(stats.specific.get());
+        if (STAGE_AND_HASH == stats.stageType) {
+            AndHashStats* spec = static_cast<AndHashStats*>(stats.specific.get());
 
             if (verbosity >= Explain::EXEC_STATS) {
-                bob->appendNumber("keysExamined", spec->keysExamined);
+                bob->appendNumber("memUsage", spec->memUsage);
+                bob->appendNumber("memLimit", spec->memLimit);
             }
 
-            bob->append("keyPattern", spec->keyPattern);
-            bob->appendBool("isMultiKey", spec->isMultiKey);
-            bob->append("indexBounds", spec->indexBounds);
+            // Extra info at full verbosity.
+            if (verbosity == Explain::FULL) {
+                bob->appendNumber("flaggedButPassed", spec->flaggedButPassed);
+                bob->appendNumber("flaggedInProgress", spec->flaggedInProgress);
+                for (size_t i = 0; i < spec->mapAfterChild.size(); ++i) {
+                    bob->appendNumber(string(stream() << "mapAfterChild_" << i),
+                                      spec->mapAfterChild[i]);
+                }
+            }
+        }
+        else if (STAGE_AND_SORTED == stats.stageType) {
+            AndSortedStats* spec = static_cast<AndSortedStats*>(stats.specific.get());
+
+            // Extra info at full verbosity.
+            if (verbosity == Explain::FULL) {
+                bob->appendNumber("flagged", spec->flagged);
+                bob->appendNumber("matchTested", spec->matchTested);
+                for (size_t i = 0; i < spec->failedAnd.size(); ++i) {
+                    bob->appendNumber(string(stream() << "failedAnd_" << i),
+                                      spec->failedAnd[i]);
+                }
+            }
         }
         else if (STAGE_COLLSCAN == stats.stageType) {
             CollectionScanStats* spec = static_cast<CollectionScanStats*>(stats.specific.get());
@@ -245,12 +288,95 @@ namespace mongo {
             if (verbosity >= Explain::EXEC_STATS) {
                 bob->appendNumber("docsExamined", spec->docsExamined);
             }
+
+            // Extra info at full verbosity.
+            if (verbosity == Explain::FULL) {
+                bob->appendNumber("alreadyHasObj", spec->alreadyHasObj);
+            }
         }
         else if (STAGE_IDHACK == stats.stageType) {
             IDHackStats* spec = static_cast<IDHackStats*>(stats.specific.get());
             if (verbosity >= Explain::EXEC_STATS) {
                 bob->appendNumber("keysExamined", spec->keysExamined);
                 bob->appendNumber("docsExamined", spec->docsExamined);
+            }
+        }
+        else if (STAGE_IXSCAN == stats.stageType) {
+            IndexScanStats* spec = static_cast<IndexScanStats*>(stats.specific.get());
+
+            if (verbosity >= Explain::EXEC_STATS) {
+                bob->appendNumber("keysExamined", spec->keysExamined);
+            }
+
+            bob->append("keyPattern", spec->keyPattern);
+            bob->appendBool("isMultiKey", spec->isMultiKey);
+
+            // Bounds can get large. Truncate to 1 MB.
+            static const int kMaxBoundsSize = 1024 * 1024;
+            bob->append("indexBounds", spec->indexBoundsVerbose.substr(0, kMaxBoundsSize));
+
+            // Extra info at full verbosity.
+            if (verbosity == Explain::FULL) {
+                bob->appendNumber("dupsTested", spec->dupsTested);
+                bob->appendNumber("dupsDropped", spec->dupsDropped);
+                bob->appendNumber("seenInvalidated", spec->seenInvalidated);
+                bob->appendNumber("matchTested", spec->matchTested);
+            }
+        }
+        else if (STAGE_OR == stats.stageType) {
+            OrStats* spec = static_cast<OrStats*>(stats.specific.get());
+
+            // Extra info at full verbosity.
+            if (verbosity == Explain::FULL) {
+                bob->appendNumber("dupsTested", spec->dupsTested);
+                bob->appendNumber("dupsDropped", spec->dupsDropped);
+                bob->appendNumber("locsForgotten", spec->locsForgotten);
+                for (size_t i = 0; i < spec->matchTested.size(); ++i) {
+                    bob->appendNumber(string(stream() << "matchTested_" << i),
+                                      spec->matchTested[i]);
+                }
+            }
+        }
+        else if (STAGE_LIMIT == stats.stageType) {
+            LimitStats* spec = static_cast<LimitStats*>(stats.specific.get());
+            bob->appendNumber("limitAmount", spec->limit);
+        }
+        else if (STAGE_PROJECTION == stats.stageType) {
+            ProjectionStats* spec = static_cast<ProjectionStats*>(stats.specific.get());
+            bob->append("transformBy", spec->projObj);
+        }
+        else if (STAGE_SHARDING_FILTER == stats.stageType) {
+            ShardingFilterStats* spec = static_cast<ShardingFilterStats*>(stats.specific.get());
+
+            if (verbosity >= Explain::EXEC_STATS) {
+                bob->appendNumber("chunkSkips", spec->chunkSkips);
+            }
+        }
+        else if (STAGE_SKIP == stats.stageType) {
+            SkipStats* spec = static_cast<SkipStats*>(stats.specific.get());
+            bob->appendNumber("skipAmount", spec->skip);
+        }
+        else if (STAGE_SORT == stats.stageType) {
+            SortStats* spec = static_cast<SortStats*>(stats.specific.get());
+            bob->append("sortPattern", spec->sortPattern);
+
+            if (verbosity >= Explain::EXEC_STATS) {
+                bob->appendNumber("memUsage", spec->memUsage);
+                bob->appendNumber("memLimit", spec->memLimit);
+            }
+
+            if (spec->limit > 0) {
+                bob->appendNumber("limitAmount", spec->limit);
+            }
+        }
+        else if (STAGE_SORT_MERGE == stats.stageType) {
+            MergeSortStats* spec = static_cast<MergeSortStats*>(stats.specific.get());
+            bob->append("sortPattern", spec->sortPattern);
+
+            // Extra info at full verbosity.
+            if (verbosity == Explain::FULL) {
+                bob->appendNumber("dupsTested", spec->dupsTested);
+                bob->appendNumber("dupsDropped", spec->dupsDropped);
             }
         }
         else if (STAGE_TEXT == stats.stageType) {
@@ -264,34 +390,6 @@ namespace mongo {
             bob->append("indexPrefix", spec->indexPrefix);
             bob->append("parsedTextQuery", spec->parsedTextQuery);
         }
-        else if (STAGE_SORT == stats.stageType) {
-            SortStats* spec = static_cast<SortStats*>(stats.specific.get());
-            bob->append("sortPattern", spec->sortPattern);
-
-            if (verbosity >= Explain::EXEC_STATS) {
-                bob->appendNumber("memUsage", spec->memUsage);
-            }
-
-            if (spec->limit > 0) {
-                bob->appendNumber("limitAmount", spec->limit);
-            }
-        }
-        else if (STAGE_SORT_MERGE == stats.stageType) {
-            MergeSortStats* spec = static_cast<MergeSortStats*>(stats.specific.get());
-            bob->append("sortPattern", spec->sortPattern);
-        }
-        else if (STAGE_PROJECTION == stats.stageType) {
-            ProjectionStats* spec = static_cast<ProjectionStats*>(stats.specific.get());
-            bob->append("transformBy", spec->projObj);
-        }
-        else if (STAGE_SKIP == stats.stageType) {
-            SkipStats* spec = static_cast<SkipStats*>(stats.specific.get());
-            bob->appendNumber("skipAmount", spec->skip);
-        }
-        else if (STAGE_LIMIT == stats.stageType) {
-            LimitStats* spec = static_cast<LimitStats*>(stats.specific.get());
-            bob->appendNumber("limitAmount", spec->limit);
-        }
 
         // We're done if there are no children.
         if (stats.children.empty()) {
@@ -303,20 +401,35 @@ namespace mongo {
         // rather than 'inputStages'.
         if (1 == stats.children.size()) {
             BSONObjBuilder childBob;
-            explainStatsTree(*stats.children[0], verbosity, &childBob);
+            statsToBSON(*stats.children[0], verbosity, &childBob, topLevelBob);
             bob->append("inputStage", childBob.obj());
             return;
         }
 
-        // There is more than one child. Recursively explainStatsTree(...) on each
+        // There is more than one child. Recursively call statsToBSON(...) on each
         // of them and add them to the 'inputStages' array.
 
         BSONArrayBuilder childrenBob(bob->subarrayStart("inputStages"));
         for (size_t i = 0; i < stats.children.size(); ++i) {
             BSONObjBuilder childBob(childrenBob.subobjStart());
-            explainStatsTree(*stats.children[i], verbosity, &childBob);
+            statsToBSON(*stats.children[i], verbosity, &childBob, topLevelBob);
         }
         childrenBob.doneFast();
+    }
+
+    // static
+    BSONObj Explain::statsToBSON(const PlanStageStats& stats,
+                                 Explain::Verbosity verbosity) {
+        BSONObjBuilder bob;
+        statsToBSON(stats, &bob, verbosity);
+        return bob.obj();
+    }
+
+    // static
+    void Explain::statsToBSON(const PlanStageStats& stats,
+                              BSONObjBuilder* bob,
+                              Explain::Verbosity verbosity) {
+        statsToBSON(stats, verbosity, bob, bob);
     }
 
     // static
@@ -338,14 +451,14 @@ namespace mongo {
         }
 
         BSONObjBuilder winningPlanBob(plannerBob.subobjStart("winningPlan"));
-        explainStatsTree(*winnerStats, Explain::QUERY_PLANNER, &winningPlanBob);
+        statsToBSON(*winnerStats, &winningPlanBob, Explain::QUERY_PLANNER);
         winningPlanBob.doneFast();
 
         // Genenerate array of rejected plans.
         BSONArrayBuilder allPlansBob(plannerBob.subarrayStart("rejectedPlans"));
         for (size_t i = 0; i < rejectedStats.size(); i++) {
             BSONObjBuilder childBob(allPlansBob.subobjStart());
-            explainStatsTree(*rejectedStats[i], Explain::QUERY_PLANNER, &childBob);
+            statsToBSON(*rejectedStats[i], &childBob, Explain::QUERY_PLANNER);
         }
         allPlansBob.doneFast();
 
@@ -354,6 +467,7 @@ namespace mongo {
 
     // static
     void Explain::generateExecStats(PlanStageStats* stats,
+                                    Explain::Verbosity verbosity,
                                     BSONObjBuilder* out) {
 
         out->appendNumber("nReturned", stats->common.advanced);
@@ -368,7 +482,7 @@ namespace mongo {
         size_t totalKeysExamined = 0;
         size_t totalDocsExamined = 0;
         for (size_t i = 0; i < statsNodes.size(); ++i) {
-            
+
             totalKeysExamined += getKeysExamined(statsNodes[i]->stageType,
                                                  statsNodes[i]->specific.get());
             totalDocsExamined += getDocsExamined(statsNodes[i]->stageType,
@@ -380,7 +494,7 @@ namespace mongo {
 
         // Add the tree of stages, with individual execution stats for each stage.
         BSONObjBuilder stagesBob(out->subobjStart("executionStages"));
-        explainStatsTree(*stats, Explain::EXEC_STATS, &stagesBob);
+        statsToBSON(*stats, &stagesBob, verbosity);
         stagesBob.doneFast();
     }
 
@@ -428,7 +542,7 @@ namespace mongo {
         //
 
         // Inspect the tree to see if there is a MultiPlanStage.
-        MultiPlanStage* mps = getMultiPlanStage(exec->getStages());
+        MultiPlanStage* mps = getMultiPlanStage(exec->getRootStage());
 
         // The executionStats verbosity level requires that we run the winning plan
         // until if finishes.
@@ -475,7 +589,7 @@ namespace mongo {
             BSONObjBuilder execBob(out->subobjStart("executionStats"));
 
             // Generate exec stats BSON for the winning plan.
-            generateExecStats(winningStats.get(), &execBob);
+            generateExecStats(winningStats.get(), verbosity, &execBob);
 
             // Also generate exec stats for each rejected plan, if the verbosity level
             // is high enough.
@@ -483,7 +597,7 @@ namespace mongo {
                 BSONArrayBuilder rejectedBob(execBob.subarrayStart("rejectedPlansExecution"));
                 for (size_t i = 0; i < rejectedStats.size(); ++i) {
                     BSONObjBuilder planBob(rejectedBob.subobjStart());
-                    generateExecStats(rejectedStats[i], &planBob);
+                    generateExecStats(rejectedStats[i], verbosity, &planBob);
                     planBob.doneFast();
                 }
                 rejectedBob.doneFast();
@@ -497,19 +611,8 @@ namespace mongo {
         return Status::OK();
     }
 
-    void Explain::getSummaryStats(PlanExecutor* exec, PlanSummaryStats* statsOut) {
-        invariant(NULL != statsOut);
-
-        PlanStage* root = exec->getStages();
-
-        // We can get some of the fields we need from the common stats stored in the
-        // root stage of the plan tree.
-        const CommonStats* common = root->getCommonStats();
-        statsOut->nReturned = common->advanced;
-        statsOut->executionTimeMillis = common->executionTimeMillis;
-
-        // The other fields are aggregations over the stages in the plan tree. We flatten
-        // the tree into a list and then compute these aggregations.
+    // static
+    string Explain::getPlanSummary(PlanStage* root) {
         vector<PlanStage*> stages;
         flattenExecTree(root, &stages);
 
@@ -518,18 +621,6 @@ namespace mongo {
         bool seenLeaf = false;
 
         for (size_t i = 0; i < stages.size(); i++) {
-            statsOut->totalKeysExamined += getKeysExamined(stages[i]->stageType(),
-                                                           stages[i]->getSpecificStats());
-            statsOut->totalDocsExamined += getDocsExamined(stages[i]->stageType(),
-                                                           stages[i]->getSpecificStats());
-
-            if (STAGE_IDHACK == stages[i]->stageType()) {
-                statsOut->isIdhack = true;
-            }
-            if (STAGE_SORT == stages[i]->stageType()) {
-                statsOut->hasSortStage = true;
-            }
-
             if (stages[i]->getChildren().empty()) {
                 // This is a leaf node. Add to the plan summary string accordingly. Unless
                 // this is the first leaf we've seen, add a delimiting string first.
@@ -543,7 +634,127 @@ namespace mongo {
             }
         }
 
-        statsOut->summaryStr = ss;
+        return ss;
+    }
+
+    // static
+    void Explain::getSummaryStats(PlanExecutor* exec, PlanSummaryStats* statsOut) {
+        invariant(NULL != statsOut);
+
+        PlanStage* root = exec->getRootStage();
+
+        // We can get some of the fields we need from the common stats stored in the
+        // root stage of the plan tree.
+        const CommonStats* common = root->getCommonStats();
+        statsOut->nReturned = common->advanced;
+        statsOut->executionTimeMillis = common->executionTimeMillis;
+
+        // Generate the plan summary string.
+        statsOut->summaryStr = getPlanSummary(root);
+
+        // The other fields are aggregations over the stages in the plan tree. We flatten
+        // the tree into a list and then compute these aggregations.
+        vector<PlanStage*> stages;
+        flattenExecTree(root, &stages);
+
+        for (size_t i = 0; i < stages.size(); i++) {
+            statsOut->totalKeysExamined += getKeysExamined(stages[i]->stageType(),
+                                                           stages[i]->getSpecificStats());
+            statsOut->totalDocsExamined += getDocsExamined(stages[i]->stageType(),
+                                                           stages[i]->getSpecificStats());
+
+            if (STAGE_IDHACK == stages[i]->stageType()) {
+                statsOut->isIdhack = true;
+            }
+            if (STAGE_SORT == stages[i]->stageType()) {
+                statsOut->hasSortStage = true;
+            }
+        }
+    }
+
+    // TODO: This is temporary and should get deleted. There are a few small ways in which
+    // this differs from 2.6 explain, but I'm not too worried because this entire format is
+    // going away soon:
+    //  1) 'indexBounds' field excluded from idhack explain.
+    //  2) 'filterSet' field (for index filters) excluded.
+    Status Explain::legacyExplain(PlanExecutor* exec, TypeExplain** explain) {
+        invariant(exec);
+        invariant(explain);
+
+        scoped_ptr<PlanStageStats> stats(exec->getStats());
+        if (NULL == stats.get()) {
+            return Status(ErrorCodes::InternalError, "no stats available to explain plan");
+        }
+
+        // Special explain format for EOF.
+        if (STAGE_EOF == stats->stageType) {
+            *explain = new TypeExplain();
+
+            // Fill in mandatory fields.
+            (*explain)->setN(0);
+            (*explain)->setNScannedObjects(0);
+            (*explain)->setNScanned(0);
+
+            // Fill in all the main fields that don't have a default in the explain data structure.
+            (*explain)->setCursor("BasicCursor");
+            (*explain)->setScanAndOrder(false);
+            (*explain)->setIsMultiKey(false);
+            (*explain)->setIndexOnly(false);
+            (*explain)->setNYields(0);
+            (*explain)->setNChunkSkips(0);
+
+            TypeExplain* allPlans = new TypeExplain;
+            allPlans->setCursor("BasicCursor");
+            (*explain)->addToAllPlans(allPlans); // ownership xfer
+
+            (*explain)->setNScannedObjectsAllPlans(0);
+            (*explain)->setNScannedAllPlans(0);
+
+            return Status::OK();
+        }
+
+        // Special explain format for idhack.
+        vector<PlanStageStats*> statNodes;
+        flattenStatsTree(stats.get(), &statNodes);
+        PlanStageStats* idhack = NULL;
+        for (size_t i = 0; i < statNodes.size(); i++) {
+            if (STAGE_IDHACK == statNodes[i]->stageType) {
+                idhack = statNodes[i];
+                break;
+            }
+        }
+
+        if (NULL != idhack) {
+            // Explain format does not match 2.4 and is intended
+            // to indicate clearly that the ID hack has been applied.
+            *explain = new TypeExplain();
+
+            IDHackStats* idhackStats = static_cast<IDHackStats*>(idhack->specific.get());
+
+            (*explain)->setCursor("IDCursor");
+            (*explain)->setIDHack(true);
+            (*explain)->setN(stats->common.advanced);
+            (*explain)->setNScanned(idhackStats->keysExamined);
+            (*explain)->setNScannedObjects(idhackStats->docsExamined);
+
+            return Status::OK();
+        }
+
+        Status status = explainPlan(*stats, explain, true /* full details */);
+        if (!status.isOK()) {
+            return status;
+        }
+
+        // Fill in explain fields that are accounted by on the runner level.
+        TypeExplain* chosenPlan = NULL;
+        explainPlan(*stats, &chosenPlan, false /* no full details */);
+        if (chosenPlan) {
+            (*explain)->addToAllPlans(chosenPlan);
+        }
+        (*explain)->setNScannedObjectsAllPlans((*explain)->getNScannedObjects());
+        (*explain)->setNScannedAllPlans((*explain)->getNScanned());
+
+        return Status::OK();
     }
 
 } // namespace mongo

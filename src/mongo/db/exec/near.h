@@ -80,17 +80,11 @@ namespace mongo {
 
         virtual ~NearStage();
 
-        /**
-         * Sets a limit on the total number of results this stage will return.
-         * Not required.
-         */
-        void setLimit(int limit);
-
         virtual bool isEOF();
         virtual StageState work(WorkingSetID* out);
 
-        virtual void prepareToYield();
-        virtual void recoverFromYield();
+        virtual void saveState();
+        virtual void restoreState(OperationContext* opCtx);
         virtual void invalidate(const DiskLoc& dl, InvalidationType type);
 
         virtual vector<PlanStage*> getChildren() const;
@@ -180,10 +174,6 @@ namespace mongo {
         // Sorted buffered results to be returned - the current interval
         struct SearchResult;
         std::priority_queue<SearchResult> _resultBuffer;
-
-        // Tracking for the number of results we should return
-        int _limit;
-        int _totalReturned;
 
         // Stats
         scoped_ptr<PlanStageStats> _stats;

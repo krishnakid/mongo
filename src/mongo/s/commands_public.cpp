@@ -50,6 +50,7 @@
 #include "mongo/db/pipeline/document_source.h"
 #include "mongo/db/pipeline/expression_context.h"
 #include "mongo/db/query/lite_parsed_query.h"
+#include "mongo/platform/atomic_word.h"
 #include "mongo/s/client_info.h"
 #include "mongo/s/chunk.h"
 #include "mongo/s/config.h"
@@ -1630,7 +1631,7 @@ namespace mongo {
          */
         class MRCmd : public PublicGridCommand {
         public:
-            AtomicUInt JOB_NUMBER;
+            AtomicUInt32 JOB_NUMBER;
 
             MRCmd() : PublicGridCommand( "mapReduce", "mapreduce" ) {}
 
@@ -1642,7 +1643,7 @@ namespace mongo {
 
             string getTmpName( const string& coll ) {
                 stringstream ss;
-                ss << "tmp.mrs." << coll << "_" << time(0) << "_" << JOB_NUMBER++;
+                ss << "tmp.mrs." << coll << "_" << time(0) << "_" << JOB_NUMBER.fetchAndAdd(1);
                 return ss.str();
             }
 
@@ -2544,6 +2545,29 @@ namespace mongo {
                 return passthrough( conf, cmdObj, result );
             }
         } cmdListCollections;
+
+        class CmdListIndexes : public PublicGridCommand {
+        public:
+            CmdListIndexes() : PublicGridCommand( "listIndexes" ) {}
+            virtual void addRequiredPrivileges(const std::string& dbname,
+                                               const BSONObj& cmdObj,
+                                               std::vector<Privilege>* out) {
+                string ns = parseNs( dbname, cmdObj );
+                ActionSet actions;
+                actions.addAction(ActionType::listIndexes);
+                out->push_back(Privilege(ResourcePattern::forCollectionName( ns ), actions));
+            }
+
+            bool run(OperationContext* txn, const string& dbName,
+                     BSONObj& cmdObj,
+                     int,
+                     string&,
+                     BSONObjBuilder& result,
+                     bool) {
+                DBConfigPtr conf = grid.getDBConfig( dbName , false );
+                return passthrough( conf, cmdObj, result );
+            }
+        } cmdListIndexes;
 
     } // namespace pub_grid_cmds
 

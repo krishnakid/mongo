@@ -31,26 +31,32 @@
 #include <boost/scoped_ptr.hpp>
 #include <boost/thread/mutex.hpp>
 #include <boost/thread/condition_variable.hpp>
-#include <map>
 #include <vector>
 
 #include "mongo/base/status.h"
 #include "mongo/bson/optime.h"
 #include "mongo/db/repl/member_state.h"
 #include "mongo/db/repl/repl_coordinator.h"
+#include "mongo/db/repl/repl_coordinator_external_state.h"
+#include "mongo/db/repl/replica_set_config.h"
 #include "mongo/db/repl/replication_executor.h"
 #include "mongo/db/repl/topology_coordinator_impl.h"
+#include "mongo/platform/unordered_map.h"
 #include "mongo/util/net/hostandport.h"
 
 namespace mongo {
 namespace repl {
+
+    class SyncSourceFeedback;
 
     class ReplicationCoordinatorImpl : public ReplicationCoordinator {
         MONGO_DISALLOW_COPYING(ReplicationCoordinatorImpl);
 
     public:
 
-        ReplicationCoordinatorImpl(const ReplSettings& settings);
+        // Takes ownership of the passed in ReplicationCoordinatorExternalState.
+        ReplicationCoordinatorImpl(const ReplSettings& settings,
+                                   ReplicationCoordinatorExternalState* externalState);
         virtual ~ReplicationCoordinatorImpl();
 
         // ================== Members of public ReplicationCoordinator API ===================
@@ -59,8 +65,6 @@ namespace repl {
                                       ReplicationExecutor::NetworkInterface* network);
 
         virtual void shutdown();
-
-        virtual bool isShutdownOkay() const;
 
         virtual ReplSettings& getSettings();
 
@@ -77,39 +81,59 @@ namespace repl {
                 const OperationContext* txn,
                 const WriteConcernOptions& writeConcern);
 
-        virtual Status stepDown(bool force,
+        virtual Status stepDown(OperationContext* txn,
+                                bool force,
                                 const Milliseconds& waitTime,
                                 const Milliseconds& stepdownTime);
 
-        virtual Status stepDownAndWaitForSecondary(const Milliseconds& initialWaitTime,
+        virtual Status stepDownAndWaitForSecondary(OperationContext* txn,
+                                                   const Milliseconds& initialWaitTime,
                                                    const Milliseconds& stepdownTime,
                                                    const Milliseconds& postStepdownWaitTime);
 
         virtual bool isMasterForReportingPurposes();
 
-        virtual bool canAcceptWritesForDatabase(const StringData& database);
+        virtual bool canAcceptWritesForDatabase(const StringData& dbName);
 
-        virtual Status canServeReadsFor(const NamespaceString& ns, bool slaveOk);
+        virtual Status checkIfWriteConcernCanBeSatisfied(
+                const WriteConcernOptions& writeConcern) const;
+
+        virtual Status canServeReadsFor(OperationContext* txn,
+                                        const NamespaceString& ns,
+                                        bool slaveOk);
 
         virtual bool shouldIgnoreUniqueIndex(const IndexDescriptor* idx);
 
-        virtual Status setLastOptime(const OID& rid, const OpTime& ts);
+        virtual Status setLastOptime(OperationContext* txn, const OID& rid, const OpTime& ts);
 
         virtual OID getElectionId();
 
-        virtual void processReplSetGetStatus(BSONObjBuilder* result);
+        virtual OID getMyRID(OperationContext* txn);
 
-        virtual bool setMaintenanceMode(bool activate);
+        virtual void prepareReplSetUpdatePositionCommand(OperationContext* txn,
+                                                         BSONObjBuilder* cmdBuilder);
 
-        virtual Status processReplSetMaintenance(bool activate, BSONObjBuilder* resultObj);
+        virtual void prepareReplSetUpdatePositionCommandHandshakes(
+                OperationContext* txn,
+                std::vector<BSONObj>* handshakes);
+
+        virtual Status processReplSetGetStatus(BSONObjBuilder* result);
+
+        virtual void processReplSetGetConfig(BSONObjBuilder* result);
+
+        virtual bool setMaintenanceMode(OperationContext* txn, bool activate);
+
+        virtual Status processReplSetMaintenance(OperationContext* txn,
+                                                 bool activate,
+                                                 BSONObjBuilder* resultObj);
 
         virtual Status processReplSetSyncFrom(const std::string& target,
                                               BSONObjBuilder* resultObj);
 
         virtual Status processReplSetFreeze(int secs, BSONObjBuilder* resultObj);
 
-        virtual Status processHeartbeat(const BSONObj& cmdObj, 
-                                        BSONObjBuilder* resultObj);
+        virtual Status processHeartbeat(const ReplSetHeartbeatArgs& args,
+                                        ReplSetHeartbeatResponse* response);
 
         virtual Status processReplSetReconfig(OperationContext* txn,
                                               const ReplSetReconfigArgs& args,
@@ -129,13 +153,11 @@ namespace repl {
         virtual Status processReplSetElect(const ReplSetElectArgs& args,
                                            BSONObjBuilder* resultObj);
 
-        virtual Status processReplSetUpdatePosition(const BSONArray& updates,
-                                                    BSONObjBuilder* resultObj);
+        virtual Status processReplSetUpdatePosition(OperationContext* txn,
+                                                    const UpdatePositionArgs& updates);
 
-        virtual Status processReplSetUpdatePositionHandshake(const BSONObj& handshake,
-                                                             BSONObjBuilder* resultObj);
-
-        virtual bool processHandshake(const OID& remoteID, const BSONObj& handshake);
+        virtual Status processHandshake(const OperationContext* txn,
+                                        const HandshakeArgs& handshake);
 
         virtual void waitUpToOneSecondForOptimeChange(const OpTime& ot);
 
@@ -143,59 +165,143 @@ namespace repl {
 
         virtual std::vector<BSONObj> getHostsWrittenTo(const OpTime& op);
 
+        virtual BSONObj getGetLastErrorDefault();
+
+        virtual Status checkReplEnabledForCommand(BSONObjBuilder* result);
+
+        virtual bool isReplEnabled() const;
+
         // ================== Members of replication code internal API ===================
 
-        // Called by the TopologyCoordinator whenever this node's replica set state transitions
-        void setCurrentMemberState(const MemberState& newState);
+        /**
+         * Does a heartbeat for a member of the replica set.
+         * Should be started during (re)configuration or in the heartbeat callback only.
+         */
+        void doMemberHeartbeat(ReplicationExecutor::CallbackData cbData,
+                               const HostAndPort& hap);
 
-        // Called by the TopologyCoordinator whenever the replica set configuration is updated
-        void setCurrentReplicaSetConfig(const TopologyCoordinator::ReplicaSetConfig& newConfig);
+        /**
+         * Cancels all heartbeats.
+         *
+         * This is only called during the callback when there is a new config.
+         * At this time no new heartbeats can be scheduled due to the serialization
+         * of calls via the executor.
+         */
+        void cancelHeartbeats();
 
     private:
 
-        // Struct that holds information about clients waiting for replication
+        // Called by the TopologyCoordinator whenever this node's replica set state transitions.
+        void _onSelfStateChange(const MemberState& newState);
+
+        // Called by the TopologyCoordinator whenever the replica set configuration is updated
+        void _onReplicaSetConfigChange(const ReplicaSetConfig& newConfig, int myIndex);
+
+        // Struct that holds information about clients waiting for replication.
         struct WaiterInfo;
 
         /*
-         * Returns true if the given writeConcern is satisfied up to "optime"
+         * Returns the OpTime of the last applied operation on this node.
+         */
+        OpTime _getLastOpApplied();
+
+        /*
+         * Returns true if the given writeConcern is satisfied up to "optime".
          */
         bool _opReplicatedEnough_inlock(const OpTime& opTime,
                                         const WriteConcernOptions& writeConcern);
 
+        /**
+         * Processes each heartbeat response.
+         * Also responsible for scheduling additional heartbeats within the timeout if they error,
+         * and on success.
+         */
+        void _handleHeartbeatResponse(const ReplicationExecutor::RemoteCommandCallbackData& cbData,
+                                      const HostAndPort& hap,
+                                      Date_t firstCallDate,
+                                      int retriesLeft);
 
-        // Protects all member data of this ReplicationCoordinator
+        void _trackHeartbeatHandle(const ReplicationExecutor::CallbackHandle& handle);
+
+        void _untrackHeartbeatHandle(const ReplicationExecutor::CallbackHandle& handle);
+
+        /**
+         * Start a heartbeat for each member in the current config
+         */
+        void _startHeartbeats();
+
+        MemberState _getCurrentMemberState_inlock() const;
+
+        /**
+         * Returns the current replication mode. This method requires the caller to be holding
+         * "_mutex" to be called safely.
+         */
+        Mode _getReplicationMode_inlock() const;
+
+        // Handles to actively queued heartbeats
+        typedef std::vector<ReplicationExecutor::CallbackHandle> HeartbeatHandles;
+        HeartbeatHandles _heartbeatHandles;
+
+        // Parsed command line arguments related to replication.  Set once at startup and then
+        // never modified again, which makes it safe to read outside of _mutex.
+        // TODO(spencer): Currently this actually is not true, there is global mutable state
+        // in ReplSettings, but we should be able to get rid of that after the legacy repl
+        // coordinator is gone. At that point we can make this const.
+        ReplSettings _settings;
+
+        // Our RID, used to identify us to our sync source when sending replication progress
+        // updates upstream.  Set once at startup and then never modified again, which makes it
+        // safe to read outside of _mutex.
+        OID _myRID;
+
+        // Protects all member data of this ReplicationCoordinator except _settings and _myRID.
         mutable boost::mutex _mutex;
 
         // list of information about clients waiting on replication.  Does *not* own the
         // WaiterInfos.
         std::vector<WaiterInfo*> _replicationWaiterList;
 
-        // Set to true when we are in the process of shutting down replication
+        // Set to true when we are in the process of shutting down replication.
         bool _inShutdown;
 
-        // Parsed command line arguments related to replication
-        ReplSettings _settings;
+        // Election ID of the last election that resulted in this node becoming primary.
+        OID _electionID;
 
-        // Pointer to the TopologyCoordinator owned by this ReplicationCoordinator
+        // Pointer to the TopologyCoordinator owned by this ReplicationCoordinator.
         boost::scoped_ptr<TopologyCoordinator> _topCoord;
 
-        // Pointer to the ReplicationExecutor owned by this ReplicationCoordinator
+        // Pointer to the ReplicationExecutor owned by this ReplicationCoordinator.
         boost::scoped_ptr<ReplicationExecutor> _replExecutor;
+
+        // Pointer to the ReplicationCoordinatorExternalState owned by this ReplicationCoordinator.
+        boost::scoped_ptr<ReplicationCoordinatorExternalState> _externalState;
+
+        // Thread that _syncSourceFeedback runs in to send replSetUpdatePosition commands upstream.
+        boost::scoped_ptr<boost::thread> _syncSourceFeedbackThread;
 
         // Thread that drives actions in the topology coordinator
         boost::scoped_ptr<boost::thread> _topCoordDriverThread;
 
-        // Maps nodes in this replication group to the last oplog operation they have committed
-        // TODO(spencer): change to unordered_map
-        typedef std::map<OID, OpTime> SlaveOpTimeMap;
-        SlaveOpTimeMap _slaveOpTimeMap;
+        struct SlaveInfo {
+            OpTime opTime; // Our last known OpTime that this slave has replicated to.
+            HostAndPort hostAndPort; // Client address of the slave.
+            int memberID; // ID of the node in the replica set config, or -1 if we're not a replSet.
+            SlaveInfo() : memberID(-1) {}
+        };
+        // Maps nodes in this replication group to information known about it such as its
+        // replication progress and its ID in the replica set config.
+        typedef unordered_map<OID, SlaveInfo, OID::Hasher> SlaveInfoMap;
+        SlaveInfoMap _slaveInfoMap;
 
-        // Current ReplicaSet state
+        // Current ReplicaSet state.
         MemberState _currentState;
 
         // The current ReplicaSet configuration object, including the information about tag groups
         // that is used to satisfy write concern requests with named gle modes.
-        TopologyCoordinatorImpl::ReplicaSetConfig _rsConfig;
+        ReplicaSetConfig _rsConfig;
+
+        // This member's index position in the current config.
+        int _thisMembersConfigIndex;
     };
 
 } // namespace repl

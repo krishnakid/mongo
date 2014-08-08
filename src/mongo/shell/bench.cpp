@@ -37,6 +37,7 @@
 #include <boost/thread/thread.hpp>
 
 #include "mongo/db/namespace_string.h"
+#include "mongo/db/operation_context_noop.h"
 #include "mongo/client/dbclientcursor.h"
 #include "mongo/scripting/bson_template_evaluator.h"
 #include "mongo/scripting/engine.h"
@@ -249,7 +250,7 @@ namespace mongo {
     }
 
     void BenchRunState::tellWorkersToFinish() {
-        _isShuttingDown.set( 1 );
+        _isShuttingDown.store( 1 );
     }
 
     void BenchRunState::assertFinished() {
@@ -258,7 +259,7 @@ namespace mongo {
     }
 
     bool BenchRunState::shouldWorkerFinish() {
-        return bool(_isShuttingDown.get());
+        return (_isShuttingDown.loadRelaxed() == 1);
     }
 
     void BenchRunState::onWorkerStarted() {
@@ -365,7 +366,8 @@ namespace mongo {
                 bool check = ! e["check"].eoo();
                 if( check ){
                     if ( e["check"].type() == CodeWScope || e["check"].type() == Code || e["check"].type() == String ) {
-                        scope = globalScriptEngine->getPooledScope( ns, "benchrun" );
+                        OperationContextNoop txn;
+                        scope = globalScriptEngine->getPooledScope(&txn, ns, "benchrun");
                         verify( scope.get() );
 
                         if ( e.type() == CodeWScope ) {
@@ -377,7 +379,7 @@ namespace mongo {
                         }
 
                         scope->init( &scopeObj );
-                        verify( scopeFunc );
+                        invariant(scopeFunc);
                     }
                     else {
                         warning() << "Invalid check type detected in benchRun op : " << e << endl;

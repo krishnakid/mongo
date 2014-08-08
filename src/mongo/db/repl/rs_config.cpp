@@ -45,8 +45,6 @@
 #include "mongo/util/net/hostandport.h"
 #include "mongo/util/text.h"
 
-using namespace bson;
-
 namespace mongo {
 
     MONGO_LOG_DEFAULT_COMPONENT_FILE(::mongo::logger::LogComponent::kReplication);
@@ -57,7 +55,7 @@ namespace repl {
     const int ReplSetConfig::DEFAULT_HB_TIMEOUT = 10;
 
 namespace {
-    AtomicUInt _warnedAboutVotes = 0;
+    AtomicUInt32 _warnedAboutVotes;
 
     void assertOnlyHas(BSONObj o, const set<string>& fields) {
         BSONObj::iterator i(o);
@@ -81,7 +79,7 @@ namespace {
     }
 
     /* comment MUST only be set when initiating the set by the initiator */
-    void ReplSetConfig::saveConfigLocally(bo comment) {
+    void ReplSetConfig::saveConfigLocally(OperationContext* txn, bo comment) {
         checkRsConfig();
 
         BSONObj newConfigBSON = asBson();
@@ -89,17 +87,16 @@ namespace {
         log() << "replSet info saving a newer config version to local.system.replset: "
               << newConfigBSON << rsLog;
         {
-            OperationContextImpl txn;
-            Client::WriteContext cx(&txn, rsConfigNs);
+            Client::WriteContext cx(txn, rsConfigNs);
 
             //theReplSet->lastOpTimeWritten = ??;
             //rather than above, do a logOp()? probably
-            Helpers::putSingletonGod(&txn,
+            Helpers::putSingletonGod(txn,
                                      rsConfigNs.c_str(),
                                      newConfigBSON,
                                      false/*logOp=false; local db so would work regardless...*/);
             if( !comment.isEmpty() && (!theReplSet || theReplSet->isPrimary()) )
-                logOpInitiate(&txn, comment);
+                logOpInitiate(txn, comment);
             cx.commit();
         }
         log() << "replSet saveConfigLocally done" << rsLog;
@@ -537,7 +534,7 @@ namespace {
                     m.priority = mobj["priority"].Number();
                 if( mobj.hasElement("votes") )
                     m.votes = (unsigned) mobj["votes"].Number();
-                if (m.votes > 1 && !_warnedAboutVotes) {
+                if (m.votes > 1 && (_warnedAboutVotes.load() == 0)) {
                     log() << "\t\tWARNING: Having more than 1 vote on a single replicaset member is"
                           << startupWarningsLog;
                     log() << "\t\tdeprecated, as it causes issues with majority write concern. For"
@@ -545,7 +542,7 @@ namespace {
                     log() << "\t\tmore information, see "
                           << "http://dochub.mongodb.org/core/replica-set-votes-deprecated"
                           << startupWarningsLog;
-                    _warnedAboutVotes.set(1);
+                    _warnedAboutVotes.store(1);
                 }
                 if( mobj.hasElement("tags") ) {
                     const BSONObj &t = mobj["tags"].Obj();

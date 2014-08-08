@@ -31,7 +31,7 @@
 #pragma once
 
 #include "mongo/base/string_data.h"
-#include "mongo/bson/util/atomic_int.h"
+#include "mongo/platform/atomic_word.h"
 #include "mongo/s/chunk_version.h"
 #include "mongo/s/distlock.h"
 #include "mongo/s/shard.h"
@@ -46,6 +46,7 @@ namespace mongo {
     class ChunkRange;
     class ChunkManager;
     class ChunkObjUnitTest;
+    struct WriteConcernOptions;
 
     typedef shared_ptr<const Chunk> ChunkPtr;
 
@@ -136,7 +137,7 @@ namespace mongo {
          *
          * @throws UserException
          */
-        Status split( bool atMedian, size_t* resultingSplits ) const;
+        Status split(bool atMedian, size_t* resultingSplits, BSONObj* res) const;
 
         /**
          * Splits this chunk at the given key (or keys)
@@ -146,7 +147,7 @@ namespace mongo {
          *
          * @throws UserException
          */
-        Status multiSplit( const std::vector<BSONObj>& splitPoints ) const;
+        Status multiSplit(const std::vector<BSONObj>& splitPoints, BSONObj* res) const;
 
         /**
          * Asks the mongod holding this chunk to find a key that approximately divides this chunk in two
@@ -172,7 +173,7 @@ namespace mongo {
          *
          * @param to shard to move this chunk to
          * @param chunSize maximum number of bytes beyond which the migrate should no go trhough
-         * @param secondaryThrottle whether during migrate all writes should block for repl
+         * @param writeConcern detailed write concern. NULL means the default write concern.
          * @param waitForDelete whether chunk move should wait for cleanup or return immediately
          * @param maxTimeMS max time for the migrate request
          * @param res the object containing details about the migrate execution
@@ -180,7 +181,7 @@ namespace mongo {
          */
         bool moveAndCommit(const Shard& to,
                            long long chunkSize,
-                           bool secondaryThrottle,
+                           const WriteConcernOptions* writeConcern,
                            bool waitForDelete,
                            int maxTimeMS,
                            BSONObj& res) const;
@@ -573,7 +574,7 @@ namespace mongo {
 
         friend class Chunk;
         friend class ChunkRangeManager; // only needed for CRM::assertValid()
-        static AtomicUInt NextSequenceNumber;
+        static AtomicUInt32 NextSequenceNumber;
         
         /** Just for testing */
         friend class TestableChunkManager;

@@ -26,20 +26,13 @@ import textwrap
 import types
 import urllib
 import urllib2
+import uuid
 from buildscripts import utils
 from buildscripts import moduleconfig
 
 import libdeps
 
 EnsureSConsVersion( 1, 1, 0 )
-if "uname" in dir(os):
-    scons_data_dir = ".scons/%s/%s" % ( os.uname()[0] , os.getenv( "HOST" , "nohost" ) )
-else:
-    scons_data_dir = ".scons/%s/" % os.getenv( "HOST" , "nohost" )
-SConsignFile( scons_data_dir + "/sconsign" )
-
-DEFAULT_INSTALL_DIR = "/usr/local"
-
 
 def findSettingsSetup():
     sys.path.append( "." )
@@ -140,8 +133,11 @@ def using_system_version_of_cxx_libraries():
     return True in [use_system_version_of_library(x) for x in cxx_library_names]
 
 def get_variant_dir():
+
+    build_dir = get_option('build-dir').rstrip('/')
+
     if has_option('variant-dir'):
-        return "#build/" + get_option('variant-dir') 
+        return (build_dir + '/' + get_option('variant-dir')).rstrip('/')
 
     substitute = lambda x: re.sub( "[:,\\\\/]" , "_" , x )
 
@@ -170,10 +166,10 @@ def get_variant_dir():
         extras += ["branch_" + substitute( utils.getGitBranch() )]
 
     if has_option('cache'):
-        s = "#build/cached/"
+        s = "cached"
         s += "/".join(extras) + "/"
     else:
-        s = "#build/${PYSYSPLATFORM}/"
+        s = "${PYSYSPLATFORM}/"
         a += extras
 
         if len(a) > 0:
@@ -182,19 +178,20 @@ def get_variant_dir():
         else:
             s += "normal/"
 
-    return s
+    return (build_dir + '/' + s).rstrip('/')
 
 # build output
 add_option( "mute" , "do not display commandlines for compiling and linking, to reduce screen noise", 0, False )
 
 # installation/packaging
-add_option( "prefix" , "installation prefix" , 1 , False, default=DEFAULT_INSTALL_DIR )
+add_option( "prefix" , "installation prefix" , 1 , False, default='$BUILD_ROOT/install' )
 add_option( "distname" , "dist name (0.8.0)" , 1 , False )
 add_option( "distmod", "additional piece for full dist name" , 1 , False )
 add_option( "distarch", "override the architecture name in dist output" , 1 , False )
 add_option( "nostrip", "do not strip installed binaries" , 0 , False )
 add_option( "extra-variant-dirs", "extra variant dir components, separated by commas", 1, False)
 add_option( "add-branch-to-variant-dir", "add current git branch to the variant dir", 0, False )
+add_option( "build-dir", "build output directory", 1, False, default='#build')
 add_option( "variant-dir", "override variant subdirectory", 1, False )
 
 # linking options
@@ -228,6 +225,7 @@ add_option( "no-glibc-check" , "don't check for new versions of glibc" , 0 , Fal
 # experimental features
 add_option( "mm", "use main memory instead of memory mapped files" , 0 , True )
 add_option( "ssl" , "Enable SSL" , 0 , True )
+add_option( "ssl-fips-capability", "Enable the ability to activate FIPS 140-2 mode", 0, True );
 add_option( "rocksdb" , "Enable RocksDB" , 0 , False )
 
 # library choices
@@ -304,7 +302,8 @@ add_option( "use-cpu-profiler",
             "Link against the google-perftools profiler library",
             0, False )
 
-add_option('build-fast-and-loose', "NEVER for production builds", 0, False)
+add_option('build-fast-and-loose', "looser dependency checking, ignored for --release builds",
+           '?', False, type="choice", choices=["on", "off"], const="on", default="on")
 
 add_option('disable-warnings-as-errors', "Don't add -Werror to compiler command line", 0, False)
 
@@ -331,13 +330,26 @@ elif windows:
                type = 'choice', default = None,
                choices = win_version_min_choices.keys())
 
+    # Someday get rid of --32 and --64 for windows and use these with a --msvc-target-arch flag
+    # that mirrors msvc-host-arch.
+    msvc_arch_choices = ['x86', 'i386', 'amd64', 'emt64', 'x86_64', 'ia64']
+
+    add_option("msvc-host-arch", "host architecture for ms toolchain", 1, True,
+               type="choice", choices=msvc_arch_choices)
+
+    add_option("msvc-script",
+               "msvc toolchain setup script, pass no argument to suppress script execution",
+               1, True)
+
+    add_option("msvc-version", "select msvc version", 1, True)
+
 add_option('cache',
            "Use an object cache rather than a per-build variant directory (experimental)",
            0, False)
 
 add_option('cache-dir',
            "Specify the directory to use for caching objects if --cache is in use",
-           1, False, default="#build/cached/.cache")
+           1, False, default="$BUILD_ROOT/scons/cache")
 
 # don't run configure if user calls --help
 if GetOption('help'):
@@ -345,7 +357,30 @@ if GetOption('help'):
 
 # --- environment setup ---
 
-variantDir = get_variant_dir()
+# If the user isn't using the # to indicate top-of-tree or $ to expand a variable, forbid
+# relative paths. Relative paths don't really work as expected, because they end up relative to
+# the top level SConstruct, not the invokers CWD. We could in theory fix this with
+# GetLaunchDir, but that seems a step too far.
+buildDir = get_option('build-dir').rstrip('/')
+if buildDir[0] not in ['$', '#']:
+    if not os.path.isabs(buildDir):
+        print("Do not use relative paths with --build-dir")
+        Exit(1)
+
+cacheDir = get_option('cache-dir').rstrip('/')
+if cacheDir[0] not in ['$', '#']:
+    if not os.path.isabs(cachdDIr):
+        print("Do not use relative paths with --cache-dir")
+        Exit(1)
+
+installDir = get_option('prefix').rstrip('/')
+if installDir[0] not in ['$', '#']:
+    if not os.path.isabs(installDir):
+        print("Do not use relative paths with --prefix")
+        Exit(1)
+
+sconsDataDir = Dir(buildDir).Dir('scons')
+SConsignFile(str(sconsDataDir.File('sconsign')))
 
 def printLocalInfo():
     import sys, SCons
@@ -407,25 +442,70 @@ v8suffix = '' if v8version == '3.12' else '-' + v8version
 
 usePCH = has_option( "usePCH" )
 
-env = Environment( BUILD_DIR=variantDir,
-                   DIST_ARCHIVE_SUFFIX='.tgz',
-                   EXTRAPATH=get_option("extrapath"),
-                   MODULE_BANNERS=[],
-                   ARCHIVE_ADDITION_DIR_MAP={},
-                   ARCHIVE_ADDITIONS=[],
-                   MSVS_ARCH=msarch ,
-                   PYTHON=utils.find_python(),
-                   SERVER_ARCHIVE='${SERVER_DIST_BASENAME}${DIST_ARCHIVE_SUFFIX}',
-                   TARGET_ARCH=msarch ,
-                   tools=["default", "gch", "jsheader", "mergelib", "unittest"],
-                   UNITTEST_ALIAS='unittests',
-                   UNITTEST_LIST='#build/unittests.txt',
-                   PYSYSPLATFORM=os.sys.platform,
+# We defer building the env until we have determined whether we want certain values. Some values
+# in the env actually have semantics for 'None' that differ from being absent, so it is better
+# to build it up via a dict, and then construct the Environment in one shot with kwargs.
+#
+# Yes, BUILD_ROOT vs BUILD_DIR is confusing. Ideally, BUILD_DIR would actually be called
+# VARIANT_DIR, and at some point we should probably do that renaming. Until we do though, we
+# also need an Environment variable for the argument to --build-dir, which is the parent of all
+# variant dirs. For now, we call that BUILD_ROOT. If and when we s/BUILD_DIR/VARIANT_DIR/g,
+# then also s/BUILD_ROOT/BUILD_DIR/g.
+envDict = dict(BUILD_ROOT=buildDir,
+               BUILD_DIR=get_variant_dir(),
+               DIST_ARCHIVE_SUFFIX='.tgz',
+               EXTRAPATH=get_option("extrapath"),
+               MODULE_BANNERS=[],
+               ARCHIVE_ADDITION_DIR_MAP={},
+               ARCHIVE_ADDITIONS=[],
+               PYTHON=utils.find_python(),
+               SERVER_ARCHIVE='${SERVER_DIST_BASENAME}${DIST_ARCHIVE_SUFFIX}',
+               tools=["default", "gch", "jsheader", "mergelib", "unittest"],
+               UNITTEST_ALIAS='unittests',
+               # TODO: Move unittests.txt to $BUILD_DIR, but that requires
+               # changes to MCI.
+               UNITTEST_LIST='$BUILD_ROOT/unittests.txt',
+               PYSYSPLATFORM=os.sys.platform,
+               PCRE_VERSION='8.30',
+               CONFIGUREDIR=sconsDataDir.Dir('sconf_temp'),
+               CONFIGURELOG=sconsDataDir.File('config.log'),
+               INSTALL_DIR=installDir,
+               )
 
-                   PCRE_VERSION='8.30',
-                   CONFIGUREDIR = '#' + scons_data_dir + '/sconf_temp',
-                   CONFIGURELOG = '#' + scons_data_dir + '/config.log'
-                   )
+if windows:
+    if msarch:
+        envDict['TARGET_ARCH'] = msarch
+
+    # We can't set this to None without disturbing the autodetection,
+    # so only set it conditionally.
+    if has_option('msvc-host-arch'):
+        envDict['HOST_ARCH'] = get_option('msvc-host-arch')
+
+    msvc_version = get_option('msvc-version')
+    msvc_script = get_option('msvc-script')
+
+    if msvc_version:
+        if msvc_script:
+            print("Passing --msvc-version with --msvc-script is not meaningful")
+            Exit(1)
+        envDict['MSVC_VERSION'] = msvc_version
+
+    # The python None value is meaningful to MSVC_USE_SCRIPT; we want to interpret
+    # --msvc-script= with no argument as meaning 'None', so check explicitly against None so
+    # that '' is not interpreted as false.
+    if msvc_script is not None:
+        if has_option('msvc-host-arch'):
+            print("Passing --msvc-host-arch with --msvc-script is not meaningful")
+            Exit(1)
+        if msarch:
+            print("Passing --32 or --64 with --msvc-script is not meaningful")
+            Exit(1)
+        if msvc_script == "":
+            msvc_script = None
+        envDict['MSVC_USE_SCRIPT'] = msvc_script
+
+env = Environment(**envDict)
+del envDict
 
 if has_option("cache"):
     EnsureSConsVersion( 2, 3, 0 )
@@ -435,7 +515,7 @@ if has_option("cache"):
     if has_option("gcov"):
         print("Mixing --cache and --gcov doesn't work correctly yet. See SERVER-11084")
         Exit(1)
-    env.CacheDir(str(env.Dir(get_option('cache-dir'))))
+    env.CacheDir(str(env.Dir(cacheDir)))
 
 # This could be 'if solaris', but unfortuantely that variable hasn't been set yet.
 if "sunos5" == os.sys.platform:
@@ -457,13 +537,11 @@ if optBuild:
 if has_option("propagate-shell-environment"):
     env['ENV'] = dict(os.environ);
 
-env['_LIBDEPS'] = '$_LIBDEPS_OBJS'
-
-if has_option('build-fast-and-loose'):
+# Ignore requests to build fast and loose for release builds.
+if get_option('build-fast-and-loose') == "on" and not has_option('release'):
     # See http://www.scons.org/wiki/GoFastButton for details
     env.Decider('MD5-timestamp')
     env.SetOption('max_drift', 1)
-    env.SourceCode('.', None)
 
 if has_option('mute'):
     env.Append( CCCOMSTR = "Compiling $TARGET" )
@@ -473,6 +551,24 @@ if has_option('mute'):
     env.Append( LINKCOMSTR = "Linking $TARGET" )
     env.Append( SHLINKCOMSTR = env["LINKCOMSTR"] )
     env.Append( ARCOMSTR = "Generating library $TARGET" )
+
+env['_LIBDEPS'] = '$_LIBDEPS_OBJS'
+
+if env['_LIBDEPS'] == '$_LIBDEPS_OBJS':
+    # The libraries we build in LIBDEPS_OBJS mode are just placeholders for tracking dependencies.
+    # This avoids wasting time and disk IO on them.
+    def write_uuid_to_file(env, target, source):
+        with open(env.File(target[0]).abspath, 'w') as fake_lib:
+            fake_lib.write(str(uuid.uuid4()))
+            fake_lib.write('\n')
+
+    def noop_action(env, target, source):
+        pass
+
+    env['ARCOM'] = write_uuid_to_file
+    env['ARCOMSTR'] = 'Generating placeholder library $TARGET'
+    env['RANLIBCOM'] = noop_action
+    env['RANLIBCOMSTR'] = 'Skipping ranlib for $TARGET'
 
 libdeps.setup_environment( env )
 
@@ -588,14 +684,10 @@ if force64:
 
 env['PROCESSOR_ARCHITECTURE'] = processor
 
-installDir = DEFAULT_INSTALL_DIR
 nixLibPrefix = "lib"
 
 dontReplacePackage = False
 isBuildingLatest = False
-
-if has_option( "prefix" ):
-    installDir = GetOption( "prefix" )
 
 def filterExists(paths):
     return filter(os.path.exists, paths)
@@ -850,6 +942,8 @@ if has_option( "ssl" ):
     else:
         env.Append( LIBS=["ssl"] )
         env.Append( LIBS=["crypto"] )
+    if has_option("ssl-fips-capability"):
+        env.Append( CPPDEFINES=["MONGO_SSL_FIPS"] )
 
 try:
     umask = os.umask(022)
@@ -1149,6 +1243,11 @@ def doConfigure(myenv):
         # New in clang-3.4, trips up things mostly in third_party, but in a few places in the
         # primary mongo sources as well.
         AddToCCFLAGSIfSupported(myenv, "-Wno-unused-const-variable")
+
+        # Prevents warning about unused but set variables found in boost version 1.49
+        # in boost/date_time/format_date_parser.hpp which does not work for compilers
+        # GCC >= 4.6. Error explained in https://svn.boost.org/trac/boost/ticket/6136 .
+        AddToCCFLAGSIfSupported(myenv, "-Wno-unused-but-set-variable")
 
     # Check if we need to disable null-conversion warnings
     if using_clang():
@@ -1844,7 +1943,6 @@ env['SERVER_DIST_BASENAME'] = 'mongodb-%s-%s' % (getSystemInstallName(), distNam
 distFile = "${SERVER_ARCHIVE}"
 
 env['NIX_LIB_DIR'] = nixLibPrefix
-env['INSTALL_DIR'] = installDir
 
 #  ---- CONVENIENCE ----
 

@@ -73,7 +73,7 @@ namespace {
 
 }  // namespace
 
-    Status MemberConfig::initialize(const BSONObj& mcfg) {
+    Status MemberConfig::initialize(const BSONObj& mcfg, ReplicaSetTagConfig* tagConfig) {
         Status status = bsonCheckOnlyHasFields(
             "replica set member configuration", mcfg, kLegalMemberConfigFieldNames);
         if (!status.isOK())
@@ -206,7 +206,8 @@ namespace {
                                   tag.fieldName() << " field has non-string value of type " <<
                                   typeName(tag.type()));
                 }
-                _tags.push_back(ReplicaSetTag(tag.fieldName(), tag.String()));
+                _tags.push_back(tagConfig->makeTag(tag.fieldNameStringData(),
+                                                   tag.valueStringData()));
             }
         }
         else if (ErrorCodes::NoSuchKey != status) {
@@ -251,6 +252,27 @@ namespace {
         return Status::OK();
     }
 
+    BSONObj MemberConfig::toBSON(const ReplicaSetTagConfig& tagConfig) const {
+        BSONObjBuilder configBuilder;
+        configBuilder.append("_id", _id);
+        configBuilder.append("host", _host.toString());
+        configBuilder.append("arbiterOnly", _arbiterOnly);
+        configBuilder.append("buildIndexes", _buildIndexes);
+        configBuilder.append("hidden", _hidden);
+        configBuilder.append("priority", _priority);
+
+        BSONObjBuilder tags(configBuilder.subobjStart("tags"));
+        for (std::vector<ReplicaSetTag>::const_iterator tag = _tags.begin();
+                tag != _tags.end();
+                tag++) {
+            tags.append(tagConfig.getTagKey(*tag), tagConfig.getTagValue(*tag));
+        }
+        tags.done();
+
+        configBuilder.append("slaveDelay", _slaveDelay.total_seconds());
+        configBuilder.append("votes", getNumVotes());
+        return configBuilder.obj();
+    }
 
 }  // namespace repl
 }  // namespace mongo

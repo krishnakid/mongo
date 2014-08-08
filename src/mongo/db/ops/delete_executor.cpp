@@ -32,15 +32,11 @@
 
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database.h"
-#include "mongo/db/client.h"
-#include "mongo/db/curop.h"
+#include "mongo/db/exec/delete.h"
 #include "mongo/db/ops/delete_request.h"
 #include "mongo/db/query/canonical_query.h"
-#include "mongo/db/query/get_runner.h"
-#include "mongo/db/query/lite_parsed_query.h"
-#include "mongo/db/query/query_planner_common.h"
+#include "mongo/db/query/get_executor.h"
 #include "mongo/db/repl/repl_coordinator_global.h"
-#include "mongo/db/repl/oplog.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/mongoutils/str.h"
 
@@ -66,7 +62,8 @@ namespace mongo {
         }
 
         CanonicalQuery* cqRaw;
-        const WhereCallbackReal whereCallback(_request->getNamespaceString().db());
+        const WhereCallbackReal whereCallback(
+                                    _request->getOpCtx(), _request->getNamespaceString().db());
 
         Status status = CanonicalQuery::canonicalize(_request->getNamespaceString().ns(),
                                                      _request->getQuery(),
@@ -80,13 +77,13 @@ namespace mongo {
         return status;
     }
 
-    long long DeleteExecutor::execute(OperationContext* txn, Database* db) {
+    long long DeleteExecutor::execute(Database* db) {
         uassertStatusOK(prepare());
         uassert(17417,
                 mongoutils::str::stream() <<
                 "DeleteExecutor::prepare() failed to parse query " << _request->getQuery(),
                 _isQueryParsed);
-        const bool logop = _request->shouldCallLogOp();
+
         const NamespaceString& ns(_request->getNamespaceString());
         if (!_request->isGod()) {
             if (ns.isSystem()) {
@@ -96,11 +93,11 @@ namespace mongo {
             }
             if (ns.ns().find('$') != string::npos) {
                 log() << "cannot delete from collection with reserved $ in name: " << ns << endl;
-                uasserted( 10100, "cannot delete from collection with reserved $ in name" );
+                uasserted(10100, "cannot delete from collection with reserved $ in name");
             }
         }
 
-        Collection* collection = db->getCollection(txn, ns.ns());
+        Collection* collection = db->getCollection(_request->getOpCtx(), ns.ns());
         if (NULL == collection) {
             return 0;
         }
@@ -111,77 +108,35 @@ namespace mongo {
 
         uassert(ErrorCodes::NotMaster,
                 str::stream() << "Not primary while removing from " << ns.ns(),
-                !logop ||
+                !_request->shouldCallLogOp() ||
                 repl::getGlobalReplicationCoordinator()->canAcceptWritesForDatabase(ns.db()));
 
-        long long nDeleted = 0;
-
-        Runner* rawRunner;
+        PlanExecutor* rawExec;
         if (_canonicalQuery.get()) {
-            uassertStatusOK(getRunner(txn, collection, _canonicalQuery.release(), &rawRunner));
+            // This is the non-idhack branch.
+            uassertStatusOK(getExecutorDelete(_request->getOpCtx(), collection,
+                                              _canonicalQuery.release(), _request->isMulti(),
+                                              _request->shouldCallLogOp(), &rawExec));
         }
         else {
-            CanonicalQuery* ignored;
-            uassertStatusOK(getRunner(txn,
-                                      collection,
-                                      ns.ns(),
-                                      _request->getQuery(),
-                                      &rawRunner,
-                                      &ignored));
+            // This is the idhack branch.
+            uassertStatusOK(getExecutorDelete(_request->getOpCtx(), collection, ns.ns(),
+                                              _request->getQuery(), _request->isMulti(),
+                                              _request->shouldCallLogOp(), &rawExec));
         }
+        scoped_ptr<PlanExecutor> exec(rawExec);
 
-        auto_ptr<Runner> runner(rawRunner);
-        ScopedRunnerRegistration safety(runner.get());
+        // Concurrently mutating state (by us) so we need to register 'exec'.
+        const ScopedExecutorRegistration safety(exec.get());
 
-        DiskLoc rloc;
-        Runner::RunnerState state;
-        CurOp* curOp = txn->getCurOp();
-        int oldYieldCount = curOp->numYields();
-        while (Runner::RUNNER_ADVANCED == (state = runner->getNext(NULL, &rloc))) {
-            if (oldYieldCount != curOp->numYields()) {
-                uassert(ErrorCodes::NotMaster,
-                        str::stream() << "No longer primary while removing from " << ns.ns(),
-                        !logop ||
-                        repl::getGlobalReplicationCoordinator()->canAcceptWritesForDatabase(
-                                ns.db()));
-                oldYieldCount = curOp->numYields();
-            }
-            BSONObj toDelete;
+        uassertStatusOK(exec->executePlan());
 
-            // TODO: do we want to buffer docs and delete them in a group rather than
-            // saving/restoring state repeatedly?
-            runner->saveState();
-            collection->deleteDocument(txn, rloc, false, false, logop ? &toDelete : NULL );
-            runner->restoreState(txn);
-
-            nDeleted++;
-
-            if (logop) {
-                if ( toDelete.isEmpty() ) {
-                    log() << "Deleted object without id in collection " << collection->ns()
-                          << ", not logging.";
-                }
-                else {
-                    bool replJustOne = true;
-                    repl::logOp(txn, "d", ns.ns().c_str(), toDelete, 0, &replJustOne);
-                }
-            }
-
-            if (!_request->isMulti()) {
-                break;
-            }
-
-            if (!_request->isGod()) {
-                txn->recoveryUnit()->commitIfNeeded();
-            }
-
-            if (debug && _request->isGod() && nDeleted == 100) {
-                log() << "warning high number of deletes with god=true "
-                      << " which could use significant memory b/c we don't commit journal";
-            }
-        }
-
-        return nDeleted;
+        // Extract the number of documents deleted from the DeleteStage stats.
+        invariant(exec->getRootStage()->stageType() == STAGE_DELETE);
+        DeleteStage* deleteStage = static_cast<DeleteStage*>(exec->getRootStage());
+        const DeleteStats* deleteStats =
+            static_cast<const DeleteStats*>(deleteStage->getSpecificStats());
+        return deleteStats->docsDeleted;
     }
 
 }  // namespace mongo

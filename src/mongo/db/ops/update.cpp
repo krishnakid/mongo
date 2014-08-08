@@ -37,9 +37,10 @@
 #include "mongo/bson/mutable/algorithm.h"
 #include "mongo/bson/mutable/document.h"
 #include "mongo/client/dbclientinterface.h"
+#include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/clientcursor.h"
-#include "mongo/db/index_set.h"
+#include "mongo/db/operation_context_impl.h"
 #include "mongo/db/ops/update_driver.h"
 #include "mongo/db/ops/update_executor.h"
 #include "mongo/db/ops/update_lifecycle.h"
@@ -47,10 +48,9 @@
 #include "mongo/db/query/get_executor.h"
 #include "mongo/db/query/lite_parsed_query.h"
 #include "mongo/db/query/query_planner_common.h"
-#include "mongo/db/repl/repl_coordinator_global.h"
 #include "mongo/db/repl/oplog.h"
-#include "mongo/db/operation_context_impl.h"
-#include "mongo/db/catalog/collection.h"
+#include "mongo/db/repl/repl_coordinator_global.h"
+#include "mongo/db/update_index_data.h"
 #include "mongo/platform/unordered_set.h"
 #include "mongo/util/log.h"
 
@@ -300,10 +300,11 @@ namespace mongo {
                 }
             }
 
-            const bool idChanged = updatedFields.findConflicts(&idFieldRef, NULL);
+            const bool checkIdField = (updatedFields.empty() && !original.isEmpty()) ||
+                                      updatedFields.findConflicts(&idFieldRef, NULL);
 
             // Add _id to fields to check since it too is immutable
-            if (idChanged)
+            if (checkIdField)
                 changedImmutableFields.keepShortest(&idFieldRef);
             else if (changedImmutableFields.empty()) {
                 // Return early if nothing changed which is immutable
@@ -420,22 +421,19 @@ namespace mongo {
         }
     } // namespace
 
-    UpdateResult update(OperationContext* txn,
-                        Database* db,
+    UpdateResult update(Database* db,
                         const UpdateRequest& request,
                         OpDebug* opDebug) {
 
         UpdateExecutor executor(&request, opDebug);
-        return executor.execute(txn, db);
+        return executor.execute(db);
     }
 
-    UpdateResult update(
-            OperationContext* txn,
-            Database* db,
-            const UpdateRequest& request,
-            OpDebug* opDebug,
-            UpdateDriver* driver,
-            CanonicalQuery* cq) {
+    UpdateResult update(Database* db,
+                        const UpdateRequest& request,
+                        OpDebug* opDebug,
+                        UpdateDriver* driver,
+                        CanonicalQuery* cq) {
 
         LOG(3) << "processing update : " << request;
 
@@ -443,7 +441,7 @@ namespace mongo {
         const NamespaceString& nsString = request.getNamespaceString();
         UpdateLifecycle* lifecycle = request.getLifecycle();
 
-        Collection* collection = db->getCollection(txn, nsString.ns());
+        Collection* collection = db->getCollection(request.getOpCtx(), nsString.ns());
 
         validateUpdate(nsString.ns().c_str(), request.getUpdates(), request.getQuery());
 
@@ -458,14 +456,19 @@ namespace mongo {
 
         PlanExecutor* rawExec;
         Status status = cq ?
-            getExecutor(txn, collection, cqHolder.release(), &rawExec) :
-            getExecutor(txn, collection, nsString.ns(), request.getQuery(), &rawExec);
+            getExecutor(request.getOpCtx(), collection, cqHolder.release(), &rawExec) :
+            getExecutor(request.getOpCtx(), collection, nsString.ns(), request.getQuery(),
+                        &rawExec);
+
         uassert(17243,
                 "could not get executor" + request.getQuery().toString() + "; " + causedBy(status),
                 status.isOK());
 
         // Create the plan executor and setup all deps.
         auto_ptr<PlanExecutor> exec(rawExec);
+
+        // Register executor with the collection cursor cache.
+        const ScopedExecutorRegistration safety(exec.get());
 
         // Get the canonical query which the underlying executor is using. This may be NULL in
         // the case of idhack updates.
@@ -515,7 +518,7 @@ namespace mongo {
         BSONObj oldObj;
 
         // Get first doc, and location
-        Runner::RunnerState state = Runner::RUNNER_ADVANCED;
+        PlanExecutor::ExecState state = PlanExecutor::ADVANCED;
 
         uassert(ErrorCodes::NotMaster,
                 mongoutils::str::stream() << "Not primary while updating " << nsString.ns(),
@@ -528,15 +531,15 @@ namespace mongo {
             DiskLoc loc;
             state = exec->getNext(&oldObj, &loc);
 
-            if (state != Runner::RUNNER_ADVANCED) {
-                if (state == Runner::RUNNER_EOF) {
+            if (state != PlanExecutor::ADVANCED) {
+                if (state == PlanExecutor::IS_EOF) {
                     // We have reached the logical end of the loop, so do yielding recovery
                     break;
                 }
                 else {
                     uassertStatusOK(Status(ErrorCodes::InternalError,
                                            str::stream() << " Update query failed -- "
-                                                         << Runner::statestr(state)));
+                                                         << PlanExecutor::statestr(state)));
                 }
             }
 
@@ -620,6 +623,8 @@ namespace mongo {
                 }
             }
 
+            WriteUnitOfWork wunit(request.getOpCtx()->recoveryUnit());
+
             // Save state before making changes
             exec->saveState();
 
@@ -627,7 +632,7 @@ namespace mongo {
                 // If a set of modifiers were all no-ops, we are still 'in place', but there is
                 // no work to do, in which case we want to consider the object unchanged.
                 if (!damages.empty() ) {
-                    collection->updateDocumentWithDamages( txn, loc, source, damages );
+                    collection->updateDocumentWithDamages(request.getOpCtx(), loc, source, damages);
                     docWasModified = true;
                     opDebug->fastmod = true;
                 }
@@ -646,7 +651,7 @@ namespace mongo {
                         str::stream() << "Resulting document after update is larger than "
                                       << BSONObjMaxUserSize,
                         newObj.objsize() <= BSONObjMaxUserSize);
-                StatusWith<DiskLoc> res = collection->updateDocument(txn,
+                StatusWith<DiskLoc> res = collection->updateDocument(request.getOpCtx(),
                                                                      loc,
                                                                      newObj,
                                                                      true,
@@ -668,14 +673,16 @@ namespace mongo {
             // Restore state after modification
             uassert(17278,
                     "Update could not restore plan executor state after updating a document.",
-                    exec->restoreState());
+                    exec->restoreState(request.getOpCtx()));
 
             // Call logOp if requested.
             if (request.shouldCallLogOp() && !logObj.isEmpty()) {
                 BSONObj idQuery = driver->makeOplogEntryQuery(newObj, request.isMulti());
-                repl::logOp(txn, "u", nsString.ns().c_str(), logObj , &idQuery,
+                repl::logOp(request.getOpCtx(), "u", nsString.ns().c_str(), logObj, &idQuery,
                       NULL, request.isFromMigration());
             }
+
+            wunit.commit();
 
             // Only record doc modifications if they wrote (exclude no-ops)
             if (docWasModified)
@@ -686,7 +693,7 @@ namespace mongo {
             }
 
             // Opportunity for journaling to write during the update.
-            txn->recoveryUnit()->commitIfNeeded();
+            request.getOpCtx()->recoveryUnit()->commitIfNeeded();
         }
 
         // Get summary information about the plan.
@@ -730,9 +737,6 @@ namespace mongo {
         // creates the base of the update for the inserterd doc (because upsert was true)
         if (cq) {
             uassertStatusOK(driver->populateDocumentWithQueryFields(cq, doc));
-            // Validate the base doc, as taken from the query -- no fields means validate all.
-            FieldRefSet noFields;
-            uassertStatusOK(validate(BSONObj(), noFields, doc, NULL, driver->modOptions()));
             if (!driver->isDocReplacement()) {
                 opDebug->fastmodinsert = true;
                 // We need all the fields from the query to compare against for validation below.
@@ -750,8 +754,7 @@ namespace mongo {
         }
 
         // Apply the update modifications and then log the update as an insert manually.
-        FieldRefSet updatedFields;
-        status = driver->update(StringData(), &doc, NULL, &updatedFields);
+        status = driver->update(StringData(), &doc);
         if (!status.isOK()) {
             uasserted(16836, status.reason());
         }
@@ -760,26 +763,20 @@ namespace mongo {
         uassertStatusOK(ensureIdAndFirst(doc));
 
         // Validate that the object replacement or modifiers resulted in a document
-        // that contains all the immutable keys and can be stored.
+        // that contains all the immutable keys and can be stored if it isn't coming
+        // from a migration or via replication.
         if (!(request.isFromReplication() || request.isFromMigration())){
             const std::vector<FieldRef*>* immutableFields = NULL;
             if (lifecycle)
                 immutableFields = lifecycle->getImmutableFields();
 
+            FieldRefSet noFields;
             // This will only validate the modified fields if not a replacement.
             uassertStatusOK(validate(original,
-                                     updatedFields,
+                                     noFields,
                                      doc,
                                      immutableFields,
                                      driver->modOptions()) );
-        }
-
-        // Only create the collection if the doc will be inserted.
-        if (!collection) {
-            collection = db->getCollection(txn, request.getNamespaceString().ns());
-            if (!collection) {
-                collection = db->createCollection(txn, request.getNamespaceString().ns());
-            }
         }
 
         // Insert the doc
@@ -788,14 +785,31 @@ namespace mongo {
                 str::stream() << "Document to upsert is larger than " << BSONObjMaxUserSize,
                 newObj.objsize() <= BSONObjMaxUserSize);
 
-        StatusWith<DiskLoc> newLoc = collection->insertDocument(txn,
+        WriteUnitOfWork wunit(request.getOpCtx()->recoveryUnit());
+        // Only create the collection if the doc will be inserted.
+        if (!collection) {
+            collection = db->getCollection(request.getOpCtx(), request.getNamespaceString().ns());
+            if (!collection) {
+                collection = db->createCollection(request.getOpCtx(), request.getNamespaceString().ns());
+            }
+        }
+
+
+        StatusWith<DiskLoc> newLoc = collection->insertDocument(request.getOpCtx(),
                                                                 newObj,
                                                                 !request.isGod() /*enforceQuota*/);
         uassertStatusOK(newLoc.getStatus());
         if (request.shouldCallLogOp()) {
-            repl::logOp(txn, "i", nsString.ns().c_str(), newObj,
-                           NULL, NULL, request.isFromMigration());
+            repl::logOp(request.getOpCtx(),
+                        "i",
+                        nsString.ns().c_str(),
+                        newObj,
+                        NULL,
+                        NULL,
+                        request.isFromMigration());
         }
+
+        wunit.commit();
 
         opDebug->nMatched = 1;
         return UpdateResult(false /* updated a non existing document */,

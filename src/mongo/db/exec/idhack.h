@@ -53,8 +53,8 @@ namespace mongo {
         virtual bool isEOF();
         virtual StageState work(WorkingSetID* out);
 
-        virtual void prepareToYield();
-        virtual void recoverFromYield();
+        virtual void saveState();
+        virtual void restoreState(OperationContext* opCtx);
         virtual void invalidate(const DiskLoc& dl, InvalidationType type);
 
         /**
@@ -92,6 +92,9 @@ namespace mongo {
 
         // Have we returned our one document?
         bool _done;
+
+        // Do we need to add index key metadata for $returnKey?
+        bool _addKeyMetadata;
 
         CommonStats _commonStats;
         IDHackStats _specificStats;

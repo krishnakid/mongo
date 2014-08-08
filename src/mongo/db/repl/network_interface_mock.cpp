@@ -57,16 +57,52 @@ namespace repl {
         return curTimeMillis64();
     }
 
+    namespace {
+        // Duplicated in real impl
+        StatusWith<int> getTimeoutMillis(Date_t expDate) {
+            // check for timeout
+            int timeout = 0;
+            if (expDate != ReplicationExecutor::kNoExpirationDate) {
+                Date_t nowDate = curTimeMillis64();
+                timeout = expDate >= nowDate ? expDate - nowDate :
+                                               ReplicationExecutor::kNoTimeout.total_milliseconds();
+                if (timeout < 0 ) {
+                    return StatusWith<int>(ErrorCodes::ExceededTimeLimit,
+                                               str::stream() << "Went to run command,"
+                                               " but it was too late. Expiration was set to "
+                                                             << expDate);
+                }
+            }
+            return StatusWith<int>(timeout);
+        }
+    } //namespace
+
     StatusWith<BSONObj> NetworkInterfaceMock::runCommand(
             const ReplicationExecutor::RemoteCommandRequest& request) {
-        return mapFindWithDefault(
-                _responses,
-                request,
-                StatusWith<BSONObj>(
-                        ErrorCodes::NoSuchKey,
-                        str::stream() << "Could not find response for " <<
-                                "Request(" << request.target.toString() << ", " <<
-                                request.dbname << ", " << request.cmdObj << ')'));
+        if (_simulatedNetworkLatencyMillis) {
+            sleepmillis(_simulatedNetworkLatencyMillis);
+        }
+
+        StatusWith<int> toStatus = getTimeoutMillis(request.expirationDate);
+        if (!toStatus.isOK())
+            return StatusWith<BSONObj>(toStatus.getStatus());
+
+        boost::unique_lock<boost::mutex> lk(_mutex);
+        while (1) {
+            ResponseInfo result = mapFindWithDefault(
+                    _responses,
+                    request,
+                    ResponseInfo(StatusWith<BSONObj>(
+                                         ErrorCodes::NoSuchKey,
+                                         str::stream() << "Could not find response for " <<
+                                         "Request(" << request.target.toString() << ", " <<
+                                         request.dbname << ", " << request.cmdObj << ')'),
+                                 false));
+            if (!result.isBlocked) {
+                return result.response;
+            }
+            _someResponseUnblocked.wait(lk);
+        }
     }
 
     void NetworkInterfaceMock::runCallbackWithGlobalExclusiveLock(
@@ -77,9 +113,42 @@ namespace repl {
 
     bool NetworkInterfaceMock::addResponse(
             const ReplicationExecutor::RemoteCommandRequest& request,
-            const StatusWith<BSONObj>& response) {
+            const StatusWith<BSONObj>& response,
+            bool isBlocked) {
+        boost::lock_guard<boost::mutex> lk(_mutex);
+        return _responses.insert(std::make_pair(request, ResponseInfo(response, isBlocked))).second;
+    }
 
-        return _responses.insert(std::make_pair(request, response)).second;
+    void NetworkInterfaceMock::unblockResponse(
+            const ReplicationExecutor::RemoteCommandRequest& request) {
+        boost::lock_guard<boost::mutex> lk(_mutex);
+        RequestResponseMap::iterator iter = _responses.find(request);
+        if (_responses.end() == iter) {
+            return;
+        }
+        if (iter->second.isBlocked) {
+            iter->second.isBlocked = false;
+            _someResponseUnblocked.notify_all();
+        }
+    }
+
+    void NetworkInterfaceMock::unblockAll() {
+        boost::lock_guard<boost::mutex> lk(_mutex);
+        for (RequestResponseMap::iterator iter = _responses.begin();
+             iter != _responses.end();
+             ++iter) {
+            iter->second.isBlocked = false;
+        }
+        _someResponseUnblocked.notify_all();
+    }
+
+    void NetworkInterfaceMock::simulatedNetworkLatency(int millis) {
+        _simulatedNetworkLatencyMillis = millis;
+    }
+
+    NetworkInterfaceMock::ResponseInfo::ResponseInfo(const StatusWith<BSONObj>& r, bool block) :
+        response(r),
+        isBlocked(block) {
     }
 
 }  // namespace repl

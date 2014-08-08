@@ -52,6 +52,7 @@
 #include "mongo/db/instance.h"
 #include "mongo/db/lasterror.h"
 #include "mongo/db/log_process_details.h"
+#include "mongo/db/operation_context_noop.h"
 #include "mongo/platform/process_id.h"
 #include "mongo/s/balance.h"
 #include "mongo/s/chunk.h"
@@ -97,7 +98,7 @@ namespace mongo {
         L"MongoDB Router",
         L"MongoDB Sharding Router"
     };
-    static void initService();
+    static ExitCode initService();
 #endif
 
     Database *database = 0;
@@ -200,7 +201,7 @@ namespace mongo {
         server->run();
     }
 
-    DBClientBase *createDirectClient() {
+    DBClientBase* createDirectClient(OperationContext* txn) {
         uassert( 10197 ,  "createDirectClient not implemented for sharding yet" , 0 );
         return 0;
     }
@@ -209,7 +210,7 @@ namespace mongo {
 
 using namespace mongo;
 
-static bool runMongosServer( bool doUpgrade ) {
+static ExitCode runMongosServer( bool doUpgrade ) {
     setThreadName( "mongosMain" );
     printShardingVersionInfo( false );
 
@@ -235,12 +236,12 @@ static bool runMongosServer( bool doUpgrade ) {
 
     if (!configServer.init(mongosGlobalParams.configdbs)) {
         log() << "couldn't resolve config db address" << endl;
-        return false;
+        return EXIT_SHARDING_ERROR;
     }
 
     if ( ! configServer.ok( true ) ) {
         log() << "configServer connection startup check failed" << endl;
-        return false;
+        return EXIT_SHARDING_ERROR;
     }
 
     startConfigServerChecker();
@@ -252,7 +253,7 @@ static bool runMongosServer( bool doUpgrade ) {
     ConnectionString configServerConnString = ConnectionString::parse(configServerURL, errMsg);
     if (!configServerConnString.isValid()) {
         error() << "Invalid connection string for config servers: " << configServerURL << endl;
-        return false;
+        return EXIT_SHARDING_ERROR;
     }
     bool upgraded = checkAndUpgradeConfigVersion(configServerConnString,
                                                  doUpgrade,
@@ -263,12 +264,12 @@ static bool runMongosServer( bool doUpgrade ) {
     if (!upgraded) {
         error() << "error upgrading config database to v" << CURRENT_CONFIG_VERSION
                 << causedBy(errMsg) << endl;
-        return false;
+        return EXIT_SHARDING_ERROR;
     }
 
     if ( doUpgrade ) {
         log() << "Config database is at version v" << CURRENT_CONFIG_VERSION;
-        return true;
+        return EXIT_CLEAN;
     }
 
     configServer.reloadSettings();
@@ -283,10 +284,12 @@ static bool runMongosServer( bool doUpgrade ) {
         boost::thread web( stdx::bind(&webServerThread,
                                        new NoAdminAccess())); // takes ownership
 
-    Status status = getGlobalAuthorizationManager()->initialize();
+    OperationContextNoop txn;
+
+    Status status = getGlobalAuthorizationManager()->initialize(&txn);
     if (!status.isOK()) {
         log() << "Initializing authorization data failed: " << status;
-        return false;
+        return EXIT_SHARDING_ERROR;
     }
 
     MessageServer::Options opts;
@@ -295,8 +298,7 @@ static bool runMongosServer( bool doUpgrade ) {
     start(opts);
 
     // listen() will return when exit code closes its socket.
-    dbexit( EXIT_NET_ERROR );
-    return true;
+    return EXIT_NET_ERROR;
 }
 
 MONGO_INITIALIZER_GENERAL(ForkServer,
@@ -360,15 +362,27 @@ static int _main() {
     }
 #endif
 
-    return !runMongosServer(mongosGlobalParams.upgrade);
+    ExitCode exitCode = runMongosServer(mongosGlobalParams.upgrade);
+
+    // To maintain backwards compatibility, we exit with EXIT_NET_ERROR if the listener loop returns.
+    if (exitCode == EXIT_NET_ERROR) {
+        dbexit( EXIT_NET_ERROR );
+    }
+
+    return (exitCode == EXIT_CLEAN) ? 0 : 1;
 }
 
 #if defined(_WIN32)
 namespace mongo {
-    static void initService() {
+    static ExitCode initService() {
         ntservice::reportStatus( SERVICE_RUNNING );
         log() << "Service running" << endl;
-        runMongosServer( false );
+
+        ExitCode exitCode = runMongosServer(mongosGlobalParams.upgrade);
+
+        // ignore EXIT_NET_ERROR on clean shutdown since we return this when the listening socket
+        // is closed
+        return (exitCode == EXIT_NET_ERROR && inShutdown()) ? EXIT_CLEAN : exitCode;
     }
 }  // namespace mongo
 #endif

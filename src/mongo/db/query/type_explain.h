@@ -26,11 +26,14 @@
  *    then also delete it in the license file.
  */
 
+// THIS FILE IS DEPRECATED -- the old explain implementation is being replaced
+
 #pragma once
 
 #include <string>
 
 #include "mongo/base/string_data.h"
+#include "mongo/bson/bson_field.h"
 #include "mongo/s/bson_serializable.h"
 
 namespace mongo {

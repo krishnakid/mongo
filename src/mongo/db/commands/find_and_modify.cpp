@@ -40,7 +40,7 @@
 #include "mongo/db/ops/delete.h"
 #include "mongo/db/ops/update.h"
 #include "mongo/db/ops/update_lifecycle_impl.h"
-#include "mongo/db/query/get_runner.h"
+#include "mongo/db/query/get_executor.h"
 #include "mongo/db/operation_context_impl.h"
 #include "mongo/util/log.h"
 
@@ -142,7 +142,7 @@ namespace mongo {
             
             Collection* collection = cx.db()->getCollection( txn, ns );
 
-            const WhereCallbackReal whereCallback = WhereCallbackReal(StringData(ns));
+            const WhereCallbackReal whereCallback = WhereCallbackReal(txn, StringData(ns));
 
             BSONObj doc;
             bool found = false;
@@ -151,17 +151,18 @@ namespace mongo {
                 massert(17383, "Could not canonicalize " + queryOriginal.toString(),
                     CanonicalQuery::canonicalize(ns, queryOriginal, &cq, whereCallback).isOK());
 
-                Runner* rawRunner;
-                massert(17384, "Could not get runner for query " + queryOriginal.toString(),
-                        getRunner(txn, collection, cq, &rawRunner, QueryPlannerParams::DEFAULT).isOK());
+                PlanExecutor* rawExec;
+                massert(17384, "Could not get plan executor for query " + queryOriginal.toString(),
+                        getExecutor(txn, collection, cq, &rawExec, QueryPlannerParams::DEFAULT).isOK());
 
-                auto_ptr<Runner> runner(rawRunner);
+                auto_ptr<PlanExecutor> exec(rawExec);
 
-                // Set up automatic yielding
-                const ScopedRunnerRegistration safety(runner.get());
+                // We need to keep this PlanExecutor registration: we are concurrently modifying
+                // state and may continue doing that with document-level locking (approach is TBD).
+                const ScopedExecutorRegistration safety(exec.get());
 
-                Runner::RunnerState state;
-                if (Runner::RUNNER_ADVANCED == (state = runner->getNext(&doc, NULL))) {
+                PlanExecutor::ExecState state;
+                if (PlanExecutor::ADVANCED == (state = exec->getNext(&doc, NULL))) {
                     found = true;
                 }
             }
@@ -247,7 +248,7 @@ namespace mongo {
                     }
                     
                     const NamespaceString requestNs(ns);
-                    UpdateRequest request(requestNs);
+                    UpdateRequest request(txn, requestNs);
 
                     request.setQuery(queryModified);
                     request.setUpdates(update);
@@ -257,8 +258,7 @@ namespace mongo {
                     // the shard version below, but for now no
                     UpdateLifecycleImpl updateLifecycle(false, requestNs);
                     request.setLifecycle(&updateLifecycle);
-                    UpdateResult res = mongo::update(txn,
-                                                     cx.db(),
+                    UpdateResult res = mongo::update(cx.db(),
                                                      request,
                                                      &txn->getCurOp()->debug());
 
@@ -328,7 +328,7 @@ namespace mongo {
 
             Projection projection;
             if (fields) {
-                projection.init(fieldsHolder, WhereCallbackReal(StringData(dbname)));
+                projection.init(fieldsHolder, WhereCallbackReal(txn, StringData(dbname)));
                 if (!projection.includeID()) {
                     fields = NULL; // do projection in post-processing
                 }

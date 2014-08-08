@@ -42,7 +42,7 @@
 #include "mongo/db/dbhelpers.h"
 #include "mongo/db/instance.h"
 #include "mongo/db/matcher/matcher.h"
-#include "mongo/db/query/get_runner.h"
+#include "mongo/db/query/get_executor.h"
 #include "mongo/db/query/query_planner.h"
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/repl_coordinator_global.h"
@@ -64,7 +64,7 @@ namespace mongo {
 
     namespace mr {
 
-        AtomicUInt Config::JOB_NUMBER;
+        AtomicUInt32 Config::JOB_NUMBER;
 
         JSFunction::JSFunction( const std::string& type , const BSONElement& e ) {
             _type = type;
@@ -276,7 +276,7 @@ namespace mongo {
                         << ".tmp.mr."
                         << cmdObj.firstElement().String()
                         << "_"
-                        << JOB_NUMBER++;
+                        << JOB_NUMBER.fetchAndAdd(1);
                 incLong = tempNamespace + "_inc";
             }
 
@@ -398,6 +398,9 @@ namespace mongo {
             {
                 // create temp collection and insert the indexes from temporary storage
                 Client::WriteContext tempCtx(_txn, _config.tempNamespace);
+                uassert(ErrorCodes::NotMaster, "no longer master", 
+                        repl::getGlobalReplicationCoordinator()->
+                        canAcceptWritesForDatabase(nsToDatabase(_config.tempNamespace.c_str())));
                 Collection* tempColl = tempCtx.ctx().db()->getCollection( _txn, _config.tempNamespace );
                 if ( !tempColl ) {
                     CollectionOptions options;
@@ -635,7 +638,11 @@ namespace mongo {
         void State::insert( const string& ns , const BSONObj& o ) {
             verify( _onDisk );
 
+
             Client::WriteContext ctx(_txn,  ns );
+            uassert(ErrorCodes::NotMaster, "no longer master", 
+                    repl::getGlobalReplicationCoordinator()->
+                    canAcceptWritesForDatabase(nsToDatabase(ns.c_str())));
             Collection* coll = ctx.ctx().db()->getCollection( _txn, ns );
             if ( !coll )
                 uasserted(13630, str::stream() << "attempted to insert into nonexistent" <<
@@ -725,7 +732,7 @@ namespace mongo {
             const string userToken = ClientBasic::getCurrent()->getAuthorizationSession()
                                                               ->getAuthenticatedUserNamesToken();
             _scope.reset(globalScriptEngine->getPooledScope(
-                            _config.dbname, "mapreduce" + userToken).release());
+                            _txn, _config.dbname, "mapreduce" + userToken).release());
 
             if ( ! _config.scopeSetup.isEmpty() )
                 _scope->init( &_config.scopeSetup );
@@ -970,7 +977,7 @@ namespace mongo {
                                         _db.count(_config.incLong, BSONObj(), QueryOption_SlaveOk)));
 
             const NamespaceString nss(_config.incLong);
-            const WhereCallbackReal whereCallback(nss.db());
+            const WhereCallbackReal whereCallback(_txn, nss.db());
 
             CanonicalQuery* cq;
             verify(CanonicalQuery::canonicalize(_config.incLong,
@@ -980,17 +987,23 @@ namespace mongo {
                                                 &cq,
                                                 whereCallback).isOK());
 
-            Runner* rawRunner;
-            verify(getRunner(_txn, ctx->ctx().db()->getCollection(_txn, _config.incLong),
-                             cq, &rawRunner, QueryPlannerParams::NO_TABLE_SCAN).isOK());
+            PlanExecutor* rawExec;
+            verify(getExecutor(_txn, ctx->ctx().db()->getCollection(_txn, _config.incLong),
+                               cq, &rawExec, QueryPlannerParams::NO_TABLE_SCAN).isOK());
 
-            auto_ptr<Runner> runner(rawRunner);
-            const ScopedRunnerRegistration safety(runner.get());
+            auto_ptr<PlanExecutor> exec(rawExec);
+
+            // This registration is necessary because we may manually yield the read lock
+            // below (in order to acquire a write lock and dump some data to a temporary
+            // collection).
+            //
+            // TODO: don't do this in the future.
+            const ScopedExecutorRegistration safety(exec.get());
 
             // iterate over all sorted objects
             BSONObj o;
-            Runner::RunnerState state;
-            while (Runner::RUNNER_ADVANCED == (state = runner->getNext(&o, NULL))) {
+            PlanExecutor::ExecState state;
+            while (PlanExecutor::ADVANCED == (state = exec->getNext(&o, NULL))) {
                 pm.hit();
 
                 if ( o.woSortOrder( prev , sortKey ) == 0 ) {
@@ -1002,7 +1015,7 @@ namespace mongo {
                     continue;
                 }
 
-                runner->saveState();
+                exec->saveState();
 
                 ctx.reset();
 
@@ -1015,7 +1028,7 @@ namespace mongo {
                 prev = o;
                 all.push_back( o );
 
-                if (!runner->restoreState(_txn)) {
+                if (!exec->restoreState(_txn)) {
                     break;
                 }
 
@@ -1310,7 +1323,7 @@ namespace mongo {
                         scoped_ptr<Client::Context> ctx(new Client::Context(txn, config.ns, false));
 
                         const NamespaceString nss(config.ns);
-                        const WhereCallbackReal whereCallback(nss.db());
+                        const WhereCallbackReal whereCallback(txn, nss.db());
 
                         CanonicalQuery* cq;
                         if (!CanonicalQuery::canonicalize(config.ns,
@@ -1323,20 +1336,24 @@ namespace mongo {
                             return 0;
                         }
 
-                        Runner* rawRunner;
-                        if (!getRunner(txn, ctx->db()->getCollection(txn, config.ns), cq, &rawRunner).isOK()) {
-                            uasserted(17239, "Can't get runner for query " + config.filter.toString());
+                        PlanExecutor* rawExec;
+                        if (!getExecutor(txn, ctx->db()->getCollection(txn, config.ns),
+                                         cq, &rawExec).isOK()) {
+                            uasserted(17239, "Can't get executor for query "
+                                             + config.filter.toString());
                             return 0;
                         }
 
-                        auto_ptr<Runner> runner(rawRunner);
-                        const ScopedRunnerRegistration safety(runner.get());
+                        auto_ptr<PlanExecutor> exec(rawExec);
+
+                        // XXX: is this registration necessary?
+                        const ScopedExecutorRegistration safety(exec.get());
 
                         Timer mt;
 
                         // go through each doc
                         BSONObj o;
-                        while (Runner::RUNNER_ADVANCED == runner->getNext(&o, NULL)) {
+                        while (PlanExecutor::ADVANCED == exec->getNext(&o, NULL)) {
                             // check to see if this is a new object we don't own yet
                             // because of a chunk migration
                             if ( collMetadata ) {

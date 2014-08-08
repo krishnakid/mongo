@@ -83,14 +83,14 @@ namespace mongo {
         }
     }
 
-    void LimitStage::prepareToYield() {
+    void LimitStage::saveState() {
         ++_commonStats.yields;
-        _child->prepareToYield();
+        _child->saveState();
     }
 
-    void LimitStage::recoverFromYield() {
+    void LimitStage::restoreState(OperationContext* opCtx) {
         ++_commonStats.unyields;
-        _child->recoverFromYield();
+        _child->restoreState(opCtx);
     }
 
     void LimitStage::invalidate(const DiskLoc& dl, InvalidationType type) {
