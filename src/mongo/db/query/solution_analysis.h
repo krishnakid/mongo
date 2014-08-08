@@ -74,6 +74,8 @@ namespace mongo {
          * This is currently the number of nodes in a MatchExpression.
          */
         static double estimateMatchCost(MatchExpression* filter);
+
+        static std::string stageTypeString(StageType ty);
     };
 }
 

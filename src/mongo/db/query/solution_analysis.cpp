@@ -61,6 +61,55 @@ namespace mongo {
         return agg;
     }
 
+    // static
+    string SolutionAnalysis::stageTypeString(StageType type) {
+        switch (type) {
+        case STAGE_AND_HASH:
+            return "AND_HASH";
+        case STAGE_AND_SORTED:
+            return "AND_SORTED";
+        case STAGE_CACHED_PLAN:
+            return "CACHED_PLAN";
+        case STAGE_COLLSCAN:
+            return "COLLSCAN";
+        case STAGE_COUNT:
+            return "COUNT";
+        case STAGE_DISTINCT:
+            return "DISTINCT";
+        case STAGE_FETCH:
+            return "FETCH";
+        case STAGE_GEO_NEAR_2D:
+            return "GEO_NEAR_2D";
+        case STAGE_GEO_NEAR_2DSPHERE:
+            return "GEO_NEAR_2DSPHERE";
+        case STAGE_IXSCAN:
+            return "IXSCAN";
+        case STAGE_KEEP_MUTATIONS:
+            return "KEEP_MUTATIONS";
+        case STAGE_LIMIT:
+            return "LIMIT";
+        case STAGE_MULTI_PLAN:
+            return "MULTI_PLAN";
+        case STAGE_OR:
+            return "OR";
+        case STAGE_PROJECTION:
+            return "PROJECTION";
+        case STAGE_SHARDING_FILTER:
+            return "SHARDING_FILTER";
+        case STAGE_SKIP:
+            return "SKIP";
+        case STAGE_SORT:
+            return "SORT";
+        case STAGE_SORT_MERGE:
+            return "SORT_MERGE";
+        case STAGE_TEXT:
+            return "TEXT";
+        default:
+            invariant(0);
+        }
+    }
+
+
 
     // static
     StQuerySolutionCost SolutionAnalysis::estimateSolutionCost(Collection* coll, 
