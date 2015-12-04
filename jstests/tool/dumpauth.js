@@ -12,15 +12,18 @@ assert( db.auth( "testuser" , "testuser" ) , "auth failed" );
 t = db[colName];
 t.drop();
 
+db.setProfilingLevel(2);
+
 for(var i = 0; i < 100; i++) {
   t.save({ "x": i });
 }
 
+db.createUser({user:  "backup" , pwd: "password", roles: ["backup"]});
+
 x = runMongoProgram( "mongodump",
                      "--db", dbName,
                      "--authenticationDatabase=admin",
-                     "-u", "testuser",
-                     "-p", "testuser",
-                     "-h", "127.0.0.1:"+m.port,
-                     "--collection", colName);
+                     "-u", "backup",
+                     "-p", "password",
+                     "-h", "127.0.0.1:"+m.port);
 assert.eq(x, 0, "mongodump should succeed with authentication");
